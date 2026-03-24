@@ -171,10 +171,10 @@ public class X86InstructionSet : Cpp2IlInstructionSet
                 builder.Or(instruction.IP, ConvertOperand(instruction, 0), ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
                 break;
             case Mnemonic.Not:
-                builder.Neg(instruction.IP, ConvertOperand(instruction, 0));
+              
                 break;
             case Mnemonic.Neg: // dest := -dest
-                builder.Neg(instruction.IP, ConvertOperand(instruction, 0));
+              
                 break;
             case Mnemonic.Imul:
                 if (instruction.OpCount == 1)

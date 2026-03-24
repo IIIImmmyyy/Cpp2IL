@@ -338,8 +338,8 @@ public class IsilBuilder
     public void Not(ulong instructionAddress, InstructionSetIndependentOperand dest,InstructionSetIndependentOperand src) =>
         AddInstruction(new(InstructionSetIndependentOpCode.Not, instructionAddress, IsilFlowControl.Continue,dest, src));
 
-    public void Neg(ulong instructionAddress, InstructionSetIndependentOperand src) =>
-        AddInstruction(new(InstructionSetIndependentOpCode.Neg, instructionAddress, IsilFlowControl.Continue, src));
+    public void Neg(ulong instructionAddress,InstructionSetIndependentOperand dest, InstructionSetIndependentOperand src) =>
+        AddInstruction(new(InstructionSetIndependentOpCode.Neg, instructionAddress, IsilFlowControl.Continue, dest,src));
 
     public void Multiply(ulong instructionAddress, InstructionSetIndependentOperand dest,
         InstructionSetIndependentOperand src1, InstructionSetIndependentOperand src2) => AddInstruction(

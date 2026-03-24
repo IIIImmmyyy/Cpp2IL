@@ -183,8 +183,8 @@ public class InstructionSetIndependentOpCode
         InstructionSetIndependentOperand.OperandType.Any,
             InstructionSetIndependentOperand.OperandType.Any);
 
-    public static readonly InstructionSetIndependentOpCode Neg = new(IsilMnemonic.Neg, 1,
-        InstructionSetIndependentOperand.OperandType.NotStack);
+    public static readonly InstructionSetIndependentOpCode Neg = new(IsilMnemonic.Neg, 2,
+        InstructionSetIndependentOperand.OperandType.Any);
 
     public static readonly InstructionSetIndependentOpCode Compare = new(IsilMnemonic.Compare, 2,
         InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any);
@@ -303,7 +303,7 @@ public class InstructionSetIndependentOpCode
             return;
         }
 
-        if (Mnemonic==IsilMnemonic.FMOV)
+        if (Mnemonic==IsilMnemonic.FMOV || Mnemonic==IsilMnemonic.Neg)
         {
             return;
         }
