@@ -217,6 +217,8 @@ public static class AsmResolverAssemblyPopulator
 
     private static void CopyCustomAttributes(HasCustomAttributes source, IList<CustomAttribute> destination)
     {
+        source.AnalyzeCustomAttributeData();
+
         if (source.CustomAttributes == null)
             return;
 
