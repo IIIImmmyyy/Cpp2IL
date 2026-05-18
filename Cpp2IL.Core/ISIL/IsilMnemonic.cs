@@ -83,4 +83,5 @@ public enum IsilMnemonic
     SDIV,
     UDIV,
     StackFrame,
+    AssumeInvalidCastCondition,
 }
