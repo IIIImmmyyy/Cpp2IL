@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using LibCpp2IL.Logging;
 using LibCpp2IL.Metadata;
+using LibCpp2IL.Elf.ExceptionHandling;
 using LibCpp2IL.PE;
 
 namespace LibCpp2IL.Elf;
@@ -21,6 +22,7 @@ public sealed class ElfFile : Il2CppBinary
     private readonly Dictionary<string, ElfSymbolTableEntry> _exportNameTable = new();
     private readonly Dictionary<ulong, ElfSymbolTableEntry> _exportAddressTable = new();
     private List<long>? _initializerPointers;
+    private IReadOnlyList<ElfExceptionRegion>? _exceptionRegions;
 
     private readonly List<(ulong start, ulong end)> relocationBlocks = [];
 
@@ -167,7 +169,24 @@ public sealed class ElfFile : Il2CppBinary
             : ReadReadableArrayAtRawAddr<ElfProgramHeaderEntry64>(_elfHeader!.pProgramHeader, _elfHeader.ProgramHeaderEntryCount).Cast<IElfProgramHeaderEntry>().ToList();
     }
 
-    private IElfProgramHeaderEntry? GetProgramHeaderOfType(ElfProgramEntryType type) => _elfProgramHeaderEntries.FirstOrDefault(p => p.Type == type);
+    public IReadOnlyList<IElfProgramHeaderEntry> ProgramHeaderEntries => _elfProgramHeaderEntries;
+
+    public IReadOnlyList<ElfSectionHeaderEntry> SectionHeaderEntries => _elfSectionHeaderEntries;
+
+    public IElfProgramHeaderEntry? GetProgramHeaderOfType(ElfProgramEntryType type) => _elfProgramHeaderEntries.FirstOrDefault(p => p.Type == type);
+
+    public ElfSectionHeaderEntry? GetSectionByName(string name) => _elfSectionHeaderEntries.FirstOrDefault(s => s.Name == name);
+
+    /// <summary>
+    /// Returns Itanium EH call-site regions recovered from .eh_frame/.eh_frame_hdr and LSDA.
+    /// The library owns ELF metadata parsing; consumers should treat helper calls as unrelated
+    /// runtime artifacts and use these regions for structural exception boundaries.
+    /// </summary>
+    public IReadOnlyList<ElfExceptionRegion> GetExceptionRegions()
+    {
+        _exceptionRegions ??= ElfExceptionHandlingReader.Read(this);
+        return _exceptionRegions;
+    }
 
     private IEnumerable<ElfSectionHeaderEntry> GetSections(ElfSectionEntryType type) => _elfSectionHeaderEntries.Where(s => s.Type == type);
 

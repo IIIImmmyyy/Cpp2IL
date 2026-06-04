@@ -10,6 +10,7 @@ public enum ElfProgramEntryType : uint
     PT_SHLIB = 5,
     PT_PHDR = 6,
     PT_TLS = 7,
+    PT_GNU_EH_FRAME = 0x6474E550,
     PT_LOOS = 0x60000000,
     PT_HIOS = 0x6FFFFFFF,
     PT_LOPROC = 0x70000000,
