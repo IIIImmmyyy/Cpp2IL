@@ -98,6 +98,9 @@ public class CustomAttributePrimitiveParameter : BaseCustomAttributeParameter
         if (PrimitiveValue is string s)
             return $"\"{s.EscapeString()}\"";
 
+        if (PrimitiveValue is bool b)
+            return b ? "true" : "false";
+
         return PrimitiveValue?.ToString(CultureInfo.InvariantCulture) ?? "null";
     }
 }
