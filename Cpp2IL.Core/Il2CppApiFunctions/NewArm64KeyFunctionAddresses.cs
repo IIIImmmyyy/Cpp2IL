@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Disarm;
 using Cpp2IL.Core.Logging;
+using Cpp2IL.Core.Model.Contexts;
 using Cpp2IL.Core.Utils;
 using Iced.Intel;
 using LibCpp2IL;
@@ -13,6 +14,23 @@ namespace Cpp2IL.Core.Il2CppApiFunctions;
 public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
 {
     private List<Arm64Instruction>? _cachedDisassembledBytes;
+
+    public override void Find(ApplicationAnalysisContext applicationAnalysisContext)
+    {
+        try
+        {
+            base.Find(applicationAnalysisContext);
+        }
+        finally
+        {
+            ClearCachedDisassembly();
+        }
+    }
+
+    private void ClearCachedDisassembly()
+    {
+        _cachedDisassembledBytes = null;
+    }
 
     private List<Arm64Instruction> DisassembleTextSection()
     {
