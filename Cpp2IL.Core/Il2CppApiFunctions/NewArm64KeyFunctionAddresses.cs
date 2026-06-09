@@ -1,11 +1,11 @@
 ﻿using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
 using Disarm;
 using Cpp2IL.Core.Logging;
 using Cpp2IL.Core.Model.Contexts;
 using Cpp2IL.Core.Utils;
-using Iced.Intel;
 using LibCpp2IL;
 using LibCpp2IL.Reflection;
 
@@ -13,7 +13,7 @@ namespace Cpp2IL.Core.Il2CppApiFunctions;
 
 public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
 {
-    private List<Arm64Instruction>? _cachedDisassembledBytes;
+    private Arm64BranchIndex? _branchIndex;
 
     public override void Find(ApplicationAnalysisContext applicationAnalysisContext)
     {
@@ -23,40 +23,42 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
         }
         finally
         {
-            ClearCachedDisassembly();
+            ClearBranchIndex();
         }
     }
 
-    private void ClearCachedDisassembly()
+    private void ClearBranchIndex()
     {
-        _cachedDisassembledBytes = null;
+        _branchIndex = null;
     }
 
-    private List<Arm64Instruction> DisassembleTextSection()
+    private Arm64BranchIndex GetBranchIndex()
     {
-        if (_cachedDisassembledBytes == null)
+        if (_branchIndex == null)
         {
-            var toDisasm = LibCpp2IlMain.Binary!.GetEntirePrimaryExecutableSection();
-            _cachedDisassembledBytes = Disassembler.Disassemble(toDisasm, LibCpp2IlMain.Binary.GetVirtualAddressOfPrimaryExecutableSection(), new(true, true, false)).ToList();
+            var binary = LibCpp2IlMain.Binary!;
+            var executableSection = binary.GetEntirePrimaryExecutableSection();
+            _branchIndex = Arm64BranchIndex.Build(
+                executableSection,
+                binary.GetVirtualAddressOfPrimaryExecutableSection(),
+                binary.IsBigEndian);
         }
 
-        return _cachedDisassembledBytes;
+        return _branchIndex;
     }
 
     protected override IEnumerable<ulong> FindAllThunkFunctions(ulong addr, uint maxBytesBack = 0, params ulong[] addressesToIgnore)
     {
-        //Disassemble .text
-        var disassembly = DisassembleTextSection();
+        // Key-function thunk discovery only needs direct B/BL callers, so use the
+        // compact branch index instead of retaining a full .text disassembly.
+        var matchingJmps = GetBranchIndex().GetBranchSourcesTo(addr);
 
-        //Find all jumps to the target address
-        var matchingJmps = disassembly.Where(i => i.Mnemonic is Arm64Mnemonic.B or Arm64Mnemonic.BL && i.BranchTarget == addr).ToList();
-
-        foreach (var matchingJmp in matchingJmps)
+        foreach (var matchingJmpAddress in matchingJmps)
         {
-            if (addressesToIgnore.Contains(matchingJmp.Address)) continue;
+            if (addressesToIgnore.Contains(matchingJmpAddress)) continue;
 
             //Find this instruction in the raw file
-            var offsetInPe = (ulong)LibCpp2IlMain.Binary!.MapVirtualAddressToRaw(matchingJmp.Address);
+            var offsetInPe = (ulong)LibCpp2IlMain.Binary!.MapVirtualAddressToRaw(matchingJmpAddress);
             if (offsetInPe == 0 || offsetInPe == (ulong)(LibCpp2IlMain.Binary.RawLength - 1))
                 continue;
 
@@ -67,7 +69,7 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
             //Double-cc = thunk
             if (previousByte == 0xCC && nextByte == 0xCC)
             {
-                yield return matchingJmp.Address;
+                yield return matchingJmpAddress;
                 continue;
             }
 
@@ -75,13 +77,13 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
             {
                 for (ulong backtrack = 1; backtrack < maxBytesBack && offsetInPe - backtrack > 0; backtrack++)
                 {
-                    if (addressesToIgnore.Contains(matchingJmp.Address - (backtrack - 1)))
+                    if (addressesToIgnore.Contains(matchingJmpAddress - (backtrack - 1)))
                         //Move to next jmp
                         break;
 
                     if (LibCpp2IlMain.Binary.GetByteAtRawAddress(offsetInPe - backtrack) == 0xCC)
                     {
-                        yield return matchingJmp.Address - (backtrack - 1);
+                        yield return matchingJmpAddress - (backtrack - 1);
                         break;
                     }
                 }
@@ -144,10 +146,77 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
 
     protected override int GetCallerCount(ulong toWhere)
     {
-        //Disassemble .text
-        var disassembly = DisassembleTextSection();
+        return GetBranchIndex().GetCallerCount(toWhere);
+    }
 
-        //Find all jumps to the target address
-        return disassembly.Count(i => i.Mnemonic is Arm64Mnemonic.B or Arm64Mnemonic.BL && i.BranchTarget == toWhere);
+    private sealed class Arm64BranchIndex
+    {
+        private readonly Dictionary<ulong, List<ulong>> _branchSourcesByTarget = new();
+
+        private Arm64BranchIndex()
+        {
+        }
+
+        public static Arm64BranchIndex Build(ReadOnlySpan<byte> executableSection, ulong sectionVirtualAddress, bool isBigEndian)
+        {
+            var index = new Arm64BranchIndex();
+
+            for (var offset = 0; offset + 4 <= executableSection.Length; offset += 4)
+            {
+                var rawInstruction = isBigEndian
+                    ? BinaryPrimitives.ReadUInt32BigEndian(executableSection.Slice(offset, 4))
+                    : BinaryPrimitives.ReadUInt32LittleEndian(executableSection.Slice(offset, 4));
+
+                var branchAddress = sectionVirtualAddress + (ulong)offset;
+                if (!TryDecodeDirectBranch(rawInstruction, branchAddress, out var target))
+                    continue;
+
+                if (!index._branchSourcesByTarget.TryGetValue(target, out var sources))
+                {
+                    sources = [];
+                    index._branchSourcesByTarget[target] = sources;
+                }
+
+                sources.Add(branchAddress);
+            }
+
+            return index;
+        }
+
+        public IReadOnlyList<ulong> GetBranchSourcesTo(ulong target)
+        {
+            return _branchSourcesByTarget.TryGetValue(target, out var sources)
+                ? sources
+                : Array.Empty<ulong>();
+        }
+
+        public int GetCallerCount(ulong target)
+        {
+            return _branchSourcesByTarget.TryGetValue(target, out var sources) ? sources.Count : 0;
+        }
+
+        private static bool TryDecodeDirectBranch(uint instruction, ulong address, out ulong target)
+        {
+            // ARM64 B/BL immediate encodings are 000101 and 100101 in bits 31..26.
+            var opcode = instruction >> 26;
+            if (opcode is 0b000101 or 0b100101)
+            {
+                var signedOffset = ((long)(instruction & 0x03FF_FFFF) << 38) >> 36;
+                target = (ulong)((long)address + signedOffset);
+                return true;
+            }
+
+            // The previous Disarm-based filter matched Arm64Mnemonic.B, which also
+            // includes conditional B.<cond> immediate instructions.
+            if ((instruction & 0xFF00_0010) == 0x5400_0000)
+            {
+                var signedOffset = ((long)((instruction >> 5) & 0x7_FFFF) << 45) >> 43;
+                target = (ulong)((long)address + signedOffset);
+                return true;
+            }
+
+            target = 0;
+            return false;
+        }
     }
 }
