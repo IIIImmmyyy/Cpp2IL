@@ -273,6 +273,20 @@ public class IsilBuilder
         InstructionSetIndependentOperand src,
         InstructionSetIndependentOperand castType) => AddInstruction(new(InstructionSetIndependentOpCode.CastBaseType,
         instructionAddress, IsilFlowControl.Continue, dest, src, castType));
+
+    public void FloatToInteger(
+        ulong instructionAddress,
+        InstructionSetIndependentOperand dest,
+        InstructionSetIndependentOperand src,
+        IsilFloatToIntegerRoundingMode roundingMode,
+        IsilIntegerSignedness signedness,
+        int targetBitWidth) => AddInstruction(new(
+        InstructionSetIndependentOpCode.FloatToInteger,
+        instructionAddress,
+        IsilFlowControl.Continue,
+        dest,
+        src,
+        InstructionSetIndependentOperand.MakeFloatToIntegerConversion(roundingMode, signedness, targetBitWidth)));
     
     
     public void Subtract(ulong instructionAddress, InstructionSetIndependentOperand dest,

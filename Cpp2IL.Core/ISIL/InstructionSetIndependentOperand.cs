@@ -36,6 +36,13 @@ public readonly struct InstructionSetIndependentOperand
     
     public static InstructionSetIndependentOperand MakeSimdMathType(IsilMnemonic isilMnemonic)
         => new(OperandType.SimdMathType, new IsilSimdMathType(isilMnemonic));
+
+    public static InstructionSetIndependentOperand MakeFloatToIntegerConversion(
+        IsilFloatToIntegerRoundingMode roundingMode,
+        IsilIntegerSignedness signedness,
+        int targetBitWidth)
+        => new(OperandType.FloatToIntegerConversion,
+            new IsilFloatToIntegerConversion(roundingMode, signedness, targetBitWidth));
     private InstructionSetIndependentOperand(OperandType type, IsilOperandData data)
     {
         Type = type;
@@ -62,8 +69,9 @@ public readonly struct InstructionSetIndependentOperand
         MethodReference = 64,
         CastType = 128,
         SimdMathType = 256,
+        FloatToIntegerConversion = 512,
         MemoryOrStack = Memory | StackOffset,
-        NotStack = Immediate | Register | Memory | Instruction | TypeMetadataUsage | MethodReference | CastType | SimdMathType,
-        Any = Immediate | StackOffset | Register | Memory | TypeMetadataUsage | MethodReference |CastType | Instruction | SimdMathType
+        NotStack = Immediate | Register | Memory | Instruction | TypeMetadataUsage | MethodReference | CastType | SimdMathType | FloatToIntegerConversion,
+        Any = Immediate | StackOffset | Register | Memory | TypeMetadataUsage | MethodReference |CastType | Instruction | SimdMathType | FloatToIntegerConversion
     }
 }
