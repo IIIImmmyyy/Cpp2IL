@@ -21,6 +21,8 @@ public sealed class ElfFile : Il2CppBinary
     private readonly List<ElfSymbolTableEntry> _symbolTable = [];
     private readonly Dictionary<string, ElfSymbolTableEntry> _exportNameTable = new();
     private readonly Dictionary<ulong, ElfSymbolTableEntry> _exportAddressTable = new();
+    private ElfPltImportTable? _pltImportTable;
+    private string? _pltImportFailureReason;
     private List<long>? _initializerPointers;
     private IReadOnlyList<ElfExceptionRegion>? _exceptionRegions;
 
@@ -186,6 +188,92 @@ public sealed class ElfFile : Il2CppBinary
     {
         _exceptionRegions ??= ElfExceptionHandlingReader.Read(this);
         return _exceptionRegions;
+    }
+
+    /// <summary>
+    /// Reads Android ARM64-style PLT imports from .plt + .rela.plt.
+    /// LibCpp2IL already owns ELF sections, symbols, and relocations; this exposes the extra
+    /// import stub table needed by downstream decompilers without assigning any runtime meaning.
+    /// </summary>
+    public bool TryGetPltImportTable(
+        [NotNullWhen(true)] out ElfPltImportTable? table,
+        [NotNullWhen(false)] out string? reason)
+    {
+        if (_pltImportTable != null)
+        {
+            table = _pltImportTable;
+            reason = null;
+            return true;
+        }
+
+        if (_pltImportFailureReason != null)
+        {
+            table = null;
+            reason = _pltImportFailureReason;
+            return false;
+        }
+
+        if (!TryReadPltImports(out table, out reason))
+        {
+            _pltImportFailureReason = reason ?? "Unable to read PLT imports.";
+            table = null;
+            reason = _pltImportFailureReason;
+            return false;
+        }
+
+        _pltImportTable = table;
+        reason = null;
+        return true;
+    }
+
+    public bool TryGetPltImports(
+        [NotNullWhen(true)] out IReadOnlyList<ElfPltImportEntry>? imports,
+        [NotNullWhen(false)] out string? reason)
+    {
+        if (!TryGetPltImportTable(out var table, out reason))
+        {
+            imports = null;
+            return false;
+        }
+
+        imports = table.Entries;
+        return true;
+    }
+
+    public bool TryGetPltImportBySymbol(
+        string symbolName,
+        [NotNullWhen(true)] out ElfPltImportEntry? entry)
+    {
+        entry = null;
+        if (!TryGetPltImportTable(out var table, out _))
+            return false;
+
+        return table.TryGetBySymbol(symbolName, out entry);
+    }
+
+    public bool TryGetPltImportByAddress(
+        ulong pltAddress,
+        [NotNullWhen(true)] out ElfPltImportEntry? entry)
+    {
+        entry = null;
+        if (!TryGetPltImportTable(out var table, out _))
+            return false;
+
+        return table.TryGetByPltAddress(pltAddress, out entry);
+    }
+
+    private bool TryReadPltImports(
+        [NotNullWhen(true)] out ElfPltImportTable? table,
+        [NotNullWhen(false)] out string? reason)
+    {
+        return ElfPltImportReader.TryReadAArch64RelaPltImports(
+            GetRawBinaryContent(),
+            _elfSectionHeaderEntries,
+            is32Bit,
+            IsBigEndian,
+            InstructionSetId,
+            out table,
+            out reason);
     }
 
     private IEnumerable<ElfSectionHeaderEntry> GetSections(ElfSectionEntryType type) => _elfSectionHeaderEntries.Where(s => s.Type == type);
