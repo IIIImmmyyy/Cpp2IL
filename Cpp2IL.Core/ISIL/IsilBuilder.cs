@@ -301,6 +301,9 @@ public class IsilBuilder
         InstructionSetIndependentOperand left, InstructionSetIndependentOperand right ,IsilMnemonic mnemonic) => AddInstruction(
         new(InstructionSetIndependentOpCode.SIMDMath,
             instructionAddress, IsilFlowControl.Continue, dest, left, right,InstructionSetIndependentOperand.MakeSimdMathType(mnemonic)));
+    public void VectorPairwiseAdd(ulong instructionAddress, InstructionSetIndependentOperand dest,
+        InstructionSetIndependentOperand src) => AddInstruction(
+        new(InstructionSetIndependentOpCode.VectorPairwiseAdd, instructionAddress, IsilFlowControl.Continue, dest, src));
     public void Add(ulong instructionAddress, InstructionSetIndependentOperand dest,
         InstructionSetIndependentOperand left, InstructionSetIndependentOperand right) => AddInstruction(
         new(InstructionSetIndependentOpCode.Add, instructionAddress, IsilFlowControl.Continue, dest, left, right));

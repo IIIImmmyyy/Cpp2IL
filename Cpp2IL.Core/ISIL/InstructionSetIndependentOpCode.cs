@@ -135,6 +135,8 @@ public class InstructionSetIndependentOpCode
     public static readonly InstructionSetIndependentOpCode SIMDMath = new(IsilMnemonic.SIMDMath, 4,
         InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.Any ,InstructionSetIndependentOperand.OperandType.SimdMathType);
+    public static readonly InstructionSetIndependentOpCode VectorPairwiseAdd = new(IsilMnemonic.VectorPairwiseAdd, 2,
+        InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any);
     public static readonly InstructionSetIndependentOpCode Add = new(IsilMnemonic.Add, 3,
         InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.Any);
