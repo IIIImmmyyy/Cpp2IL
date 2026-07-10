@@ -20,6 +20,8 @@ public readonly struct InstructionSetIndependentOperand
     public static InstructionSetIndependentOperand MakeVectorElement(string registerName, IsilVectorRegisterElementOperand.VectorElementWidth width, int index) => new(OperandType.Register, new IsilVectorRegisterElementOperand(registerName, width, index));
     public static InstructionSetIndependentOperand MakeTypeMetadataUsage(TypeAnalysisContext value) => new(OperandType.TypeMetadataUsage, new IsilTypeMetadataUsageOperand(value));
     public static InstructionSetIndependentOperand MakeMethodReference(MethodAnalysisContext value) => new(OperandType.MethodReference, new IsilMethodOperand(value));
+    public static InstructionSetIndependentOperand MakeSystemRegister(IsilSystemRegister register) =>
+        new(OperandType.SystemRegister, new IsilSystemRegisterOperand(register));
     
     
     //==== ext================================
@@ -70,8 +72,9 @@ public readonly struct InstructionSetIndependentOperand
         CastType = 128,
         SimdMathType = 256,
         FloatToIntegerConversion = 512,
+        SystemRegister = 1024,
         MemoryOrStack = Memory | StackOffset,
-        NotStack = Immediate | Register | Memory | Instruction | TypeMetadataUsage | MethodReference | CastType | SimdMathType | FloatToIntegerConversion,
-        Any = Immediate | StackOffset | Register | Memory | TypeMetadataUsage | MethodReference |CastType | Instruction | SimdMathType | FloatToIntegerConversion
+        NotStack = Immediate | Register | Memory | Instruction | TypeMetadataUsage | MethodReference | CastType | SimdMathType | FloatToIntegerConversion | SystemRegister,
+        Any = Immediate | StackOffset | Register | Memory | TypeMetadataUsage | MethodReference | CastType | Instruction | SimdMathType | FloatToIntegerConversion | SystemRegister
     }
 }

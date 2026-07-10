@@ -11,6 +11,9 @@ public class InstructionSetIndependentOpCode
         InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any);
     public static readonly InstructionSetIndependentOpCode Move = new(IsilMnemonic.Move, 2,
         InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any);
+    public static readonly InstructionSetIndependentOpCode ReadSystemRegister = new(IsilMnemonic.ReadSystemRegister, 2,
+        InstructionSetIndependentOperand.OperandType.Register,
+        InstructionSetIndependentOperand.OperandType.SystemRegister);
     
     
     public static readonly InstructionSetIndependentOpCode LoadRegisterToVector =

@@ -221,6 +221,14 @@ public class IsilBuilder
     public void Move(ulong instructionAddress, InstructionSetIndependentOperand dest,
         InstructionSetIndependentOperand src) => AddInstruction(new(InstructionSetIndependentOpCode.Move,
         instructionAddress, IsilFlowControl.Continue, dest, src));
+
+    public void ReadSystemRegister(ulong instructionAddress, InstructionSetIndependentOperand dest,
+        InstructionSetIndependentOperand systemRegister) => AddInstruction(new(
+        InstructionSetIndependentOpCode.ReadSystemRegister,
+        instructionAddress,
+        IsilFlowControl.Continue,
+        dest,
+        systemRegister));
     
         
     public void LoadRegisterToVector(ulong instructionAddress, InstructionSetIndependentOperand dest,

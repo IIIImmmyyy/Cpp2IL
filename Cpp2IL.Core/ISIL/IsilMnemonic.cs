@@ -86,4 +86,5 @@ public enum IsilMnemonic
     UDIV,
     StackFrame,
     AssumeInvalidCastCondition,
+    ReadSystemRegister,
 }
