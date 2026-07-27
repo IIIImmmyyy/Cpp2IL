@@ -267,12 +267,6 @@ public class InstructionSetIndependentOpCode
     
     public static readonly InstructionSetIndependentOpCode StackFrame= new(IsilMnemonic.StackFrame, 1,
         InstructionSetIndependentOperand.OperandType.StackOffset);
-    public static readonly InstructionSetIndependentOpCode AssumeInvalidCastCondition = new(
-        IsilMnemonic.AssumeInvalidCastCondition,
-        3,
-        InstructionSetIndependentOperand.OperandType.Immediate,
-        InstructionSetIndependentOperand.OperandType.Any,
-        InstructionSetIndependentOperand.OperandType.Any);
 
     public readonly IsilMnemonic Mnemonic;
     public readonly InstructionSetIndependentOperand.OperandType[] PermittedOperandTypes;
