@@ -378,6 +378,10 @@ public class IsilBuilder
         AddInstruction(new(InstructionSetIndependentOpCode.Call, instructionAddress, IsilFlowControl.MethodCall,
             PrepareCallOperands(dest, args)));
 
+    public void CallNoReturn(ulong instructionAddress, ulong dest, params InstructionSetIndependentOperand[] args) =>
+        AddInstruction(new(InstructionSetIndependentOpCode.CallNoReturn, instructionAddress,
+            IsilFlowControl.MethodCall, PrepareCallOperands(dest, args)));
+
     public void CallRegister(ulong instructionAddress, InstructionSetIndependentOperand dest, bool noReturn = false) =>
         AddInstruction(new(
             noReturn ? InstructionSetIndependentOpCode.CallNoReturn : InstructionSetIndependentOpCode.Call,
