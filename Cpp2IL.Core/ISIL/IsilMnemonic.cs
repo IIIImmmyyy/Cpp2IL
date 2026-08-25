@@ -51,6 +51,7 @@ public enum IsilMnemonic
     AssignIfLessOrEqual, //<=
     Cast2BaseType,//cat to base type
     FloatToInteger,
+    IntegerToFloat,
     VectorElementLoad, //Vector element access
     VectorElementStore, //Vector element store
     DUP,

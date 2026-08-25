@@ -295,6 +295,19 @@ public class IsilBuilder
         dest,
         src,
         InstructionSetIndependentOperand.MakeFloatToIntegerConversion(roundingMode, signedness, targetBitWidth)));
+
+    public void IntegerToFloat(
+        ulong instructionAddress,
+        InstructionSetIndependentOperand dest,
+        InstructionSetIndependentOperand src,
+        IsilIntegerSignedness signedness,
+        int sourceBitWidth) => AddInstruction(new(
+        InstructionSetIndependentOpCode.IntegerToFloat,
+        instructionAddress,
+        IsilFlowControl.Continue,
+        dest,
+        src,
+        InstructionSetIndependentOperand.MakeIntegerToFloatConversion(signedness, sourceBitWidth)));
     
     
     public void Subtract(ulong instructionAddress, InstructionSetIndependentOperand dest,

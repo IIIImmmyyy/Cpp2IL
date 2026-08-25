@@ -120,6 +120,10 @@ public class InstructionSetIndependentOpCode
         InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.FloatToIntegerConversion);
+    public static readonly InstructionSetIndependentOpCode IntegerToFloat = new(IsilMnemonic.IntegerToFloat, 3,
+        InstructionSetIndependentOperand.OperandType.Any,
+        InstructionSetIndependentOperand.OperandType.Any,
+        InstructionSetIndependentOperand.OperandType.IntegerToFloatConversion);
     public static readonly InstructionSetIndependentOpCode Call = new(IsilMnemonic.Call);
     public static readonly InstructionSetIndependentOpCode VirtualCall = new(IsilMnemonic.VirtualCall);
     public static readonly InstructionSetIndependentOpCode VTableCall = new(IsilMnemonic.VTableCall,1,

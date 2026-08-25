@@ -45,6 +45,12 @@ public readonly struct InstructionSetIndependentOperand
         int targetBitWidth)
         => new(OperandType.FloatToIntegerConversion,
             new IsilFloatToIntegerConversion(roundingMode, signedness, targetBitWidth));
+
+    public static InstructionSetIndependentOperand MakeIntegerToFloatConversion(
+        IsilIntegerSignedness signedness,
+        int sourceBitWidth)
+        => new(OperandType.IntegerToFloatConversion,
+            new IsilIntegerToFloatConversion(signedness, sourceBitWidth));
     private InstructionSetIndependentOperand(OperandType type, IsilOperandData data)
     {
         Type = type;
@@ -73,8 +79,9 @@ public readonly struct InstructionSetIndependentOperand
         SimdMathType = 256,
         FloatToIntegerConversion = 512,
         SystemRegister = 1024,
+        IntegerToFloatConversion = 2048,
         MemoryOrStack = Memory | StackOffset,
-        NotStack = Immediate | Register | Memory | Instruction | TypeMetadataUsage | MethodReference | CastType | SimdMathType | FloatToIntegerConversion | SystemRegister,
-        Any = Immediate | StackOffset | Register | Memory | TypeMetadataUsage | MethodReference | CastType | Instruction | SimdMathType | FloatToIntegerConversion | SystemRegister
+        NotStack = Immediate | Register | Memory | Instruction | TypeMetadataUsage | MethodReference | CastType | SimdMathType | FloatToIntegerConversion | SystemRegister | IntegerToFloatConversion,
+        Any = Immediate | StackOffset | Register | Memory | TypeMetadataUsage | MethodReference | CastType | Instruction | SimdMathType | FloatToIntegerConversion | SystemRegister | IntegerToFloatConversion
     }
 }
