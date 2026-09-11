@@ -152,6 +152,13 @@ public class IsilBuilder
         AddInstruction(new(InstructionSetIndependentOpCode.FABS, instructionAddress, IsilFlowControl.Continue, dest,
             op1));
     }
+    public void FCMGT(ulong instructionAddress,
+        InstructionSetIndependentOperand dest, InstructionSetIndependentOperand left,
+        InstructionSetIndependentOperand right)
+    {
+        AddInstruction(new(InstructionSetIndependentOpCode.FCMGT, instructionAddress,
+            IsilFlowControl.Continue, dest, left, right));
+    }
     public void BFI(ulong instructionAddress,
         InstructionSetIndependentOperand dest, InstructionSetIndependentOperand op1,
         InstructionSetIndependentOperand op2, InstructionSetIndependentOperand op3)

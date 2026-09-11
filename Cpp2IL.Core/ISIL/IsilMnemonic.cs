@@ -87,4 +87,5 @@ public enum IsilMnemonic
     UDIV,
     StackFrame,
     ReadSystemRegister,
+    FCMGT,
 }
