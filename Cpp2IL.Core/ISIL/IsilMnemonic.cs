@@ -88,4 +88,5 @@ public enum IsilMnemonic
     StackFrame,
     ReadSystemRegister,
     FCMGT,
+    ZeroExtend,
 }

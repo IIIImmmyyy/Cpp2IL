@@ -126,6 +126,12 @@ public class InstructionSetIndependentOpCode
         InstructionSetIndependentOperand.OperandType.Register,
         InstructionSetIndependentOperand.OperandType.Immediate,
         InstructionSetIndependentOperand.OperandType.Immediate);
+    // 零扩展也显式携带截取范围和目的位宽，Raw IR 与 SignExtend 共用读取/扩展生命周期。
+    public static readonly InstructionSetIndependentOpCode ZeroExtend = new(IsilMnemonic.ZeroExtend, 4,
+        InstructionSetIndependentOperand.OperandType.Register,
+        InstructionSetIndependentOperand.OperandType.Register,
+        InstructionSetIndependentOperand.OperandType.Immediate,
+        InstructionSetIndependentOperand.OperandType.Immediate);
     public static readonly InstructionSetIndependentOpCode FloatToInteger = new(IsilMnemonic.FloatToInteger, 3,
         InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.Any,

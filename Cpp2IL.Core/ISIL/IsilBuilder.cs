@@ -307,6 +307,24 @@ public class IsilBuilder
         InstructionSetIndependentOperand.MakeImmediate(sourceBitWidth),
         InstructionSetIndependentOperand.MakeImmediate(targetBitWidth)));
 
+    /// <summary>
+    /// 截取源寄存器低 sourceBitWidth 位，再零扩展到 targetBitWidth；宽度来自原生指令，
+    /// Raw IR 转换展开为独立 read_piece 和 zero_extend，保留后续字段投影所需的读取范围。
+    /// </summary>
+    public void ZeroExtend(
+        ulong instructionAddress,
+        InstructionSetIndependentOperand dest,
+        InstructionSetIndependentOperand src,
+        int sourceBitWidth,
+        int targetBitWidth) => AddInstruction(new(
+        InstructionSetIndependentOpCode.ZeroExtend,
+        instructionAddress,
+        IsilFlowControl.Continue,
+        dest,
+        src,
+        InstructionSetIndependentOperand.MakeImmediate(sourceBitWidth),
+        InstructionSetIndependentOperand.MakeImmediate(targetBitWidth)));
+
     public void FloatToInteger(
         ulong instructionAddress,
         InstructionSetIndependentOperand dest,
