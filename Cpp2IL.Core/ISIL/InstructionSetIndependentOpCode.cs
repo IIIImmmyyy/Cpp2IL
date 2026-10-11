@@ -120,6 +120,12 @@ public class InstructionSetIndependentOpCode
         InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.CastType);
+    // SignExtend 保留原生有效位数和目的位数，不能由寄存器当前推断类型反推截断边界。
+    public static readonly InstructionSetIndependentOpCode SignExtend = new(IsilMnemonic.SignExtend, 4,
+        InstructionSetIndependentOperand.OperandType.Register,
+        InstructionSetIndependentOperand.OperandType.Register,
+        InstructionSetIndependentOperand.OperandType.Immediate,
+        InstructionSetIndependentOperand.OperandType.Immediate);
     public static readonly InstructionSetIndependentOpCode FloatToInteger = new(IsilMnemonic.FloatToInteger, 3,
         InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.Any,

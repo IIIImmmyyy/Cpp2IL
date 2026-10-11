@@ -289,6 +289,24 @@ public class IsilBuilder
         InstructionSetIndependentOperand castType) => AddInstruction(new(InstructionSetIndependentOpCode.CastBaseType,
         instructionAddress, IsilFlowControl.Continue, dest, src, castType));
 
+    /// <summary>
+    /// 截取源寄存器低 sourceBitWidth 位，再符号扩展到 targetBitWidth；宽度均来自原生指令。
+    /// Raw IR 转换负责展开为独立 read_piece 和 integer_extend，避免丢失读取范围。
+    /// </summary>
+    public void SignExtend(
+        ulong instructionAddress,
+        InstructionSetIndependentOperand dest,
+        InstructionSetIndependentOperand src,
+        int sourceBitWidth,
+        int targetBitWidth) => AddInstruction(new(
+        InstructionSetIndependentOpCode.SignExtend,
+        instructionAddress,
+        IsilFlowControl.Continue,
+        dest,
+        src,
+        InstructionSetIndependentOperand.MakeImmediate(sourceBitWidth),
+        InstructionSetIndependentOperand.MakeImmediate(targetBitWidth)));
+
     public void FloatToInteger(
         ulong instructionAddress,
         InstructionSetIndependentOperand dest,
