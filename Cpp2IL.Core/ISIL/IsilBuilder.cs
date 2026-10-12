@@ -339,6 +339,22 @@ public class IsilBuilder
         src,
         InstructionSetIndependentOperand.MakeFloatToIntegerConversion(roundingMode, signedness, targetBitWidth)));
 
+    public void VectorNarrow(ulong address, InstructionSetIndependentOperand dest,
+        InstructionSetIndependentOperand source, int destinationStartLane)
+        => AddInstruction(new(InstructionSetIndependentOpCode.VectorNarrow, address, IsilFlowControl.Continue,
+            dest, source, InstructionSetIndependentOperand.MakeImmediate(destinationStartLane)));
+
+    public void VectorWidenShiftLeft(ulong address, InstructionSetIndependentOperand dest,
+        InstructionSetIndependentOperand source, int sourceStartLane, int shift)
+        => AddInstruction(new(InstructionSetIndependentOpCode.VectorWidenShiftLeft, address, IsilFlowControl.Continue,
+            dest, source, InstructionSetIndependentOperand.MakeImmediate(sourceStartLane),
+            InstructionSetIndependentOperand.MakeImmediate(shift)));
+
+    public void VectorBitSelect(ulong address, InstructionSetIndependentOperand dest,
+        InstructionSetIndependentOperand mask, InstructionSetIndependentOperand whenSet, InstructionSetIndependentOperand whenClear)
+        => AddInstruction(new(InstructionSetIndependentOpCode.VectorBitSelect, address, IsilFlowControl.Continue,
+            dest, mask, whenSet, whenClear));
+
     public void IntegerToFloat(
         ulong instructionAddress,
         InstructionSetIndependentOperand dest,

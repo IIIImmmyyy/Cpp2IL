@@ -140,6 +140,17 @@ public class InstructionSetIndependentOpCode
         InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.IntegerToFloatConversion);
+    // SIMD 布局只在导入边界存在：窄化/无符号扩宽及位选择在 IR 转换时展开为标量位值，不能进入语义 Pass。
+    // Narrow 第三项为目标起始 lane；Widen 第三/四项为源起始 lane 和左移量。
+    public static readonly InstructionSetIndependentOpCode VectorNarrow = new(IsilMnemonic.VectorNarrow, 3,
+        InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any,
+        InstructionSetIndependentOperand.OperandType.Immediate);
+    public static readonly InstructionSetIndependentOpCode VectorWidenShiftLeft = new(IsilMnemonic.VectorWidenShiftLeft, 4,
+        InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any,
+        InstructionSetIndependentOperand.OperandType.Immediate, InstructionSetIndependentOperand.OperandType.Immediate);
+    public static readonly InstructionSetIndependentOpCode VectorBitSelect = new(IsilMnemonic.VectorBitSelect, 4,
+        InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any,
+        InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any);
     public static readonly InstructionSetIndependentOpCode Call = new(IsilMnemonic.Call);
     public static readonly InstructionSetIndependentOpCode VirtualCall = new(IsilMnemonic.VirtualCall);
     public static readonly InstructionSetIndependentOpCode VTableCall = new(IsilMnemonic.VTableCall,1,

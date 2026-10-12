@@ -89,4 +89,7 @@ public enum IsilMnemonic
     ReadSystemRegister,
     FCMGT,
     ZeroExtend,
+    VectorNarrow,
+    VectorWidenShiftLeft,
+    VectorBitSelect,
 }
