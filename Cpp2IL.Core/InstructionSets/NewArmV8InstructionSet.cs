@@ -69,6 +69,8 @@ public class NewArmV8InstructionSet : Cpp2IlInstructionSet
 
     private void ConvertInstructionStatement(Arm64Instruction instruction, IsilBuilder builder, MethodAnalysisContext context)
     {
+        // 共享解码器输出 CMN 后恢复原 ADDS 形态，保持本入口既有的转换行为。
+        instruction = instruction.ExpandCmnAlias();
         switch (instruction.Mnemonic)
         {
             case Arm64Mnemonic.MOV:
