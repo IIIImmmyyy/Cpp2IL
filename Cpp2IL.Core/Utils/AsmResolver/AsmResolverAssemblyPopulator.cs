@@ -130,7 +130,7 @@ public static class AsmResolverAssemblyPopulator
     /// <param name="parameter">The parameter to convert</param>
     /// <param name="boxIfNeeded">Whether the returned attribute will be used in context of a member that is typed as object. If true, the resulting attribute will be an object-typed one wrapping a BoxedArgument containing the real value. If false, the real value will be returned directly.</param>
     /// <remarks>
-    /// BoxIfNeeded will cause the resulting attribute to be boxed if the parameter is an enum or a type parameter. This is required if, for example, the enum or type is being passed as the argument in a constructor for which the parameter is typed as object.
+    /// Primitive and enum values passed to object-typed members must include their actual type in a BoxedArgument.
     /// </remarks>
     private static CustomAttributeArgument FromAnalyzedAttributeArgument(AssemblyDefinition parentAssembly, BaseCustomAttributeParameter parameter, bool boxIfNeeded)
     {
@@ -140,6 +140,7 @@ public static class AsmResolverAssemblyPopulator
         {
             return parameter switch
             {
+                CustomAttributePrimitiveParameter primitiveParameter when boxIfNeeded => new(TypeDefinitionsAsmResolver.Object.ToTypeSignature(), new BoxedArgument(GetTypeSigFromAttributeArg(parentAssembly, primitiveParameter), primitiveParameter.PrimitiveValue)),
                 CustomAttributePrimitiveParameter primitiveParameter => new(GetTypeSigFromAttributeArg(parentAssembly, primitiveParameter), primitiveParameter.PrimitiveValue),
                 
                 CustomAttributeEnumParameter enumParameter when boxIfNeeded => new(TypeDefinitionsAsmResolver.Object.ToTypeSignature(), new BoxedArgument(GetTypeSigFromAttributeArg(parentAssembly, enumParameter), enumParameter.UnderlyingPrimitiveParameter.PrimitiveValue)),
@@ -161,10 +162,17 @@ public static class AsmResolverAssemblyPopulator
     }
 
     private static CustomAttributeNamedArgument FromAnalyzedAttributeField(AssemblyDefinition parentAssembly, CustomAttributeField field)
-        => new(CustomAttributeArgumentMemberType.Field, field.Field.Name, GetTypeSigFromAttributeArg(parentAssembly, field.Value), FromAnalyzedAttributeArgument(parentAssembly, field.Value, field.Field.FieldType == field.Field.AppContext.SystemTypes.SystemObjectType));
+    {
+        var argument = FromAnalyzedAttributeArgument(parentAssembly, field.Value, field.Field.FieldType == field.Field.AppContext.SystemTypes.SystemObjectType);
+        // The named argument header must agree with the encoded value, including its object wrapper.
+        return new(CustomAttributeArgumentMemberType.Field, field.Field.Name, argument.ArgumentType, argument);
+    }
 
     private static CustomAttributeNamedArgument FromAnalyzedAttributeProperty(AssemblyDefinition parentAssembly, CustomAttributeProperty property)
-        => new(CustomAttributeArgumentMemberType.Property, property.Property.Name, GetTypeSigFromAttributeArg(parentAssembly, property.Value), FromAnalyzedAttributeArgument(parentAssembly, property.Value, property.Property.PropertyType == property.Property.AppContext.SystemTypes.SystemObjectType));
+    {
+        var argument = FromAnalyzedAttributeArgument(parentAssembly, property.Value, property.Property.PropertyType == property.Property.AppContext.SystemTypes.SystemObjectType);
+        return new(CustomAttributeArgumentMemberType.Property, property.Property.Name, argument.ArgumentType, argument);
+    }
 
     private static CustomAttribute? ConvertCustomAttribute(AnalyzedCustomAttribute analyzedCustomAttribute, AssemblyDefinition assemblyDefinition)
     {
