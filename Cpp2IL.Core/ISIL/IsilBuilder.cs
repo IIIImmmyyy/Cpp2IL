@@ -484,17 +484,17 @@ public class IsilBuilder
         InstructionSetIndependentOpCode.JumpIfNotEqual, IsilFlowControl.ConditionalJump);
 
 
-    public void JumpIfGreater(ulong instructionAddress, ulong target) => CreateJump(instructionAddress, target,
-        InstructionSetIndependentOpCode.JumpIfGreater, IsilFlowControl.ConditionalJump);
+    public void JumpIfGreater(ulong instructionAddress, ulong target, bool jumpWhenFalse = false) => CreateJump(instructionAddress, target,
+        InstructionSetIndependentOpCode.JumpIfGreater, IsilFlowControl.ConditionalJump, jumpWhenFalse);
 
-    public void JumpIfLess(ulong instructionAddress, ulong target) => CreateJump(instructionAddress, target,
-        InstructionSetIndependentOpCode.JumpIfLess, IsilFlowControl.ConditionalJump);
+    public void JumpIfLess(ulong instructionAddress, ulong target, bool jumpWhenFalse = false) => CreateJump(instructionAddress, target,
+        InstructionSetIndependentOpCode.JumpIfLess, IsilFlowControl.ConditionalJump, jumpWhenFalse);
 
-    public void JumpIfGreaterOrEqual(ulong instructionAddress, ulong target) => CreateJump(instructionAddress, target,
-        InstructionSetIndependentOpCode.JumpIfGreaterOrEqual, IsilFlowControl.ConditionalJump);
+    public void JumpIfGreaterOrEqual(ulong instructionAddress, ulong target, bool jumpWhenFalse = false) => CreateJump(instructionAddress, target,
+        InstructionSetIndependentOpCode.JumpIfGreaterOrEqual, IsilFlowControl.ConditionalJump, jumpWhenFalse);
 
-    public void JumpIfLessOrEqual(ulong instructionAddress, ulong target) => CreateJump(instructionAddress, target,
-        InstructionSetIndependentOpCode.JumpIfLessOrEqual, IsilFlowControl.ConditionalJump);
+    public void JumpIfLessOrEqual(ulong instructionAddress, ulong target, bool jumpWhenFalse = false) => CreateJump(instructionAddress, target,
+        InstructionSetIndependentOpCode.JumpIfLessOrEqual, IsilFlowControl.ConditionalJump, jumpWhenFalse);
 
     public void AssignIfLessThan(ulong instructionAddress, InstructionSetIndependentOperand dest,
         InstructionSetIndependentOperand left, InstructionSetIndependentOperand right)
@@ -546,13 +546,16 @@ public class IsilBuilder
     }
 
     private void CreateJump(ulong instructionAddress, ulong target, InstructionSetIndependentOpCode independentOpCode,
-        IsilFlowControl flowControl)
+        IsilFlowControl flowControl, bool jumpWhenFalse = false)
     {
         var newInstruction = new InstructionSetIndependentInstruction(
             independentOpCode,
             instructionAddress,
             flowControl
-        );
+        )
+        {
+            JumpWhenFalse = jumpWhenFalse
+        };
         AddInstruction(newInstruction);
         _jumpsToFix.Add((newInstruction, target));
     }
