@@ -35,30 +35,56 @@ public class FieldAnalysisContext : HasCustomAttributesAndName, IFieldInfoProvid
 
     public virtual FieldAttributes? OverrideAttributes { get; set; }
 
-    public FieldAttributes Attributes => OverrideAttributes ?? DefaultAttributes;
+    public FieldAttributes Attributes
+    {
+        get => OverrideAttributes ?? DefaultAttributes;
+        set => OverrideAttributes = value;
+    }
 
     public bool IsStatic => (Attributes & FieldAttributes.Static) != 0;
 
     public virtual object? DefaultConstantValue => BackingData?.Field.DefaultValue?.Value;
 
+    public virtual bool UseOverrideConstantValue { get; set; } = false;
+
     public virtual object? OverrideConstantValue { get; set; }
 
-    public object? ConstantValue => OverrideConstantValue ?? DefaultConstantValue;
+    public object? ConstantValue
+    {
+        get => UseOverrideConstantValue ? OverrideConstantValue : DefaultConstantValue;
+        set => OverrideConstantValue = value;
+    }
 
-    public int Offset => BackingData == null ? 0 : AppContext.Binary.GetFieldOffsetFromIndex(DeclaringType.Definition!.TypeIndex, BackingData.IndexInParent, BackingData.Field.FieldIndex, DeclaringType.Definition.IsValueType, IsStatic);
+    public virtual int DefaultOffset => BackingData?.FieldOffset ?? -1;
 
-    public virtual TypeAnalysisContext DefaultFieldType => DeclaringType.DeclaringAssembly.ResolveIl2CppType(RawFieldType)
+    public virtual int? OverrideOffset { get; set; }
+
+    public int Offset
+    {
+        get => OverrideOffset ?? DefaultOffset;
+        set => OverrideOffset = value;
+    }
+
+    public virtual TypeAnalysisContext DefaultFieldType => AppContext.ResolveIl2CppType(RawFieldType)
                                                            ?? throw new($"Field type {RawFieldType} could not be resolved.");
 
     public TypeAnalysisContext? OverrideFieldType { get; set; }
 
-    public TypeAnalysisContext FieldType => OverrideFieldType ?? DefaultFieldType;
+    public TypeAnalysisContext FieldType
+    {
+        get => OverrideFieldType ?? DefaultFieldType;
+        set => OverrideFieldType = value;
+    }
 
     public virtual byte[] DefaultStaticArrayInitialValue => BackingData?.Field.StaticArrayInitialValue ?? [];
 
     public virtual byte[]? OverrideStaticArrayInitialValue { get; set; }
 
-    public byte[] StaticArrayInitialValue => OverrideStaticArrayInitialValue ?? DefaultStaticArrayInitialValue;
+    public byte[] StaticArrayInitialValue
+    {
+        get => OverrideStaticArrayInitialValue ?? DefaultStaticArrayInitialValue;
+        set => OverrideStaticArrayInitialValue = value;
+    }
 
     public FieldAttributes Visibility
     {
@@ -68,7 +94,7 @@ public class FieldAnalysisContext : HasCustomAttributesAndName, IFieldInfoProvid
         }
         set
         {
-            OverrideAttributes = (Attributes & ~FieldAttributes.FieldAccessMask) | (value & FieldAttributes.FieldAccessMask);
+            Attributes = (Attributes & ~FieldAttributes.FieldAccessMask) | (value & FieldAttributes.FieldAccessMask);
         }
     }
 

@@ -1,12 +1,8 @@
-﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Disarm;
 using Cpp2IL.Core.Logging;
 using Cpp2IL.Core.Utils;
-using Iced.Intel;
-using LibCpp2IL;
-using LibCpp2IL.Reflection;
 
 namespace Cpp2IL.Core.Il2CppApiFunctions;
 
@@ -18,11 +14,33 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
     {
         if (_cachedDisassembledBytes == null)
         {
-            var toDisasm = LibCpp2IlMain.Binary!.GetEntirePrimaryExecutableSection();
-            _cachedDisassembledBytes = Disassembler.Disassemble(toDisasm, LibCpp2IlMain.Binary.GetVirtualAddressOfPrimaryExecutableSection(), new(true, true, false)).ToList();
+            var binary = _appContext.Binary;
+            var toDisasm = binary.GetEntirePrimaryExecutableSection();
+            _cachedDisassembledBytes = Disassembler.Disassemble(toDisasm, binary.GetVirtualAddressOfPrimaryExecutableSection(), new(true, true, false)).ToList();
         }
 
         return _cachedDisassembledBytes;
+    }
+
+    private HashSet<ulong> CallTargets => field ??=
+    [
+        .. DisassembleTextSection()
+            .Where(i => i.Mnemonic == Arm64Mnemonic.BL)
+            .Select(i => i.BranchTarget)
+    ];
+
+    private bool IsFunctionStart(List<Arm64Instruction> disassembly, int index)
+    {
+        if (CallTargets.Contains(disassembly[index].Address))
+            return true;
+
+        if (index == 0)
+            return true;
+
+        // it's a function start if the previous instruction can't fall through into it
+        var previous = disassembly[index - 1];
+        return previous.Mnemonic is Arm64Mnemonic.RET or Arm64Mnemonic.RETAA or Arm64Mnemonic.RETAB or Arm64Mnemonic.BR or Arm64Mnemonic.BRK or Arm64Mnemonic.INVALID
+               || (previous.Mnemonic == Arm64Mnemonic.B && previous.MnemonicConditionCode is Arm64ConditionCode.NONE or Arm64ConditionCode.AL);
     }
 
     protected override IEnumerable<ulong> FindAllThunkFunctions(ulong addr, uint maxBytesBack = 0, params ulong[] addressesToIgnore)
@@ -30,51 +48,45 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
         //Disassemble .text
         var disassembly = DisassembleTextSection();
 
-        //Find all jumps to the target address
-        var matchingJmps = disassembly.Where(i => i.Mnemonic is Arm64Mnemonic.B or Arm64Mnemonic.BL && i.BranchTarget == addr).ToList();
-
-        foreach (var matchingJmp in matchingJmps)
+        for (var index = 0; index < disassembly.Count; index++)
         {
-            if (addressesToIgnore.Contains(matchingJmp.Address)) continue;
+            var instruction = disassembly[index];
 
-            //Find this instruction in the raw file
-            var offsetInPe = (ulong)LibCpp2IlMain.Binary!.MapVirtualAddressToRaw(matchingJmp.Address);
-            if (offsetInPe == 0 || offsetInPe == (ulong)(LibCpp2IlMain.Binary.RawLength - 1))
+            // a thunk ends by tail-calling the real function
+            if (instruction.Mnemonic != Arm64Mnemonic.B || instruction.MnemonicConditionCode is not (Arm64ConditionCode.NONE or Arm64ConditionCode.AL) || instruction.BranchTarget != addr)
                 continue;
 
-            //get next and previous bytes
-            var previousByte = LibCpp2IlMain.Binary.GetByteAtRawAddress(offsetInPe - 1);
-            var nextByte = LibCpp2IlMain.Binary.GetByteAtRawAddress(offsetInPe + 4);
-
-            //Double-cc = thunk
-            if (previousByte == 0xCC && nextByte == 0xCC)
-            {
-                yield return matchingJmp.Address;
+            if (addressesToIgnore.Contains(instruction.Address))
                 continue;
-            }
 
-            if (nextByte == 0xCC && maxBytesBack > 0)
+            // walk back over any setup instructions to the start of the function containing the branch,
+            // bailing if it's too far away to be a thunk
+            var maxInstructionsBack = (int)(maxBytesBack / 4);
+            for (var back = 0; back <= maxInstructionsBack && index - back >= 0; back++)
             {
-                for (ulong backtrack = 1; backtrack < maxBytesBack && offsetInPe - backtrack > 0; backtrack++)
-                {
-                    if (addressesToIgnore.Contains(matchingJmp.Address - (backtrack - 1)))
-                        //Move to next jmp
-                        break;
+                if (!IsFunctionStart(disassembly, index - back))
+                    continue;
 
-                    if (LibCpp2IlMain.Binary.GetByteAtRawAddress(offsetInPe - backtrack) == 0xCC)
-                    {
-                        yield return matchingJmp.Address - (backtrack - 1);
-                        break;
-                    }
-                }
+                var start = disassembly[index - back].Address;
+                if (!addressesToIgnore.Contains(start))
+                    yield return start;
+
+                break;
             }
         }
+    }
+
+    protected override ulong FindFirstCallTargetInMethod(ulong methodVa)
+    {
+        var instructions = NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(_appContext, methodVa, false);
+        var call = instructions.FirstOrDefault(i => i.Mnemonic == Arm64Mnemonic.BL);
+        return call.Mnemonic == Arm64Mnemonic.BL ? call.BranchTarget : 0;
     }
 
     protected override ulong GetObjectIsInstFromSystemType()
     {
         Logger.Verbose("\tTrying to use System.Type::IsInstanceOfType to find il2cpp::vm::Object::IsInst...");
-        var typeIsInstanceOfType = LibCpp2IlReflection.GetType("Type", "System")?.Methods?.FirstOrDefault(m => m.Name == "IsInstanceOfType");
+        var typeIsInstanceOfType = ReflectionCache.GetType("Type", "System")?.Methods?.FirstOrDefault(m => m.Name == "IsInstanceOfType");
         if (typeIsInstanceOfType == null)
         {
             Logger.VerboseNewline("Type or method not found, aborting.");
@@ -87,7 +99,7 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
         //The last call is to Object::IsInst
 
         Logger.Verbose($"IsInstanceOfType found at 0x{typeIsInstanceOfType.MethodPointer:X}...");
-        var instructions = NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(typeIsInstanceOfType.MethodPointer, true);
+        var instructions = NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(_appContext, typeIsInstanceOfType.MethodPointer, false);
 
         var lastCall = instructions.LastOrDefault(i => i.Mnemonic == Arm64Mnemonic.BL);
 
@@ -103,25 +115,18 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
 
     protected override ulong FindFunctionThisIsAThunkOf(ulong thunkPtr, bool prioritiseCall = false)
     {
-        var instructions = NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(thunkPtr, true);
+        var instructions = NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(_appContext, thunkPtr, false);
 
-        try
+        var target = prioritiseCall ? Arm64Mnemonic.BL : Arm64Mnemonic.B;
+        var matchingCall = instructions.FirstOrDefault(i => i.Mnemonic == target);
+
+        if (matchingCall.Mnemonic == Arm64Mnemonic.INVALID)
         {
-            var target = prioritiseCall ? Arm64Mnemonic.BL : Arm64Mnemonic.B;
-            var matchingCall = instructions.FirstOrDefault(i => i.Mnemonic == target);
-
-            if (matchingCall.Mnemonic == Arm64Mnemonic.INVALID)
-            {
-                target = target == Arm64Mnemonic.BL ? Arm64Mnemonic.B : Arm64Mnemonic.BL;
-                matchingCall = instructions.First(i => i.Mnemonic == target);
-            }
-
-            return matchingCall.BranchTarget;
+            target = target == Arm64Mnemonic.BL ? Arm64Mnemonic.B : Arm64Mnemonic.BL;
+            matchingCall = instructions.FirstOrDefault(i => i.Mnemonic == target);
         }
-        catch (Exception)
-        {
-            return 0;
-        }
+
+        return matchingCall.Mnemonic != Arm64Mnemonic.INVALID ? matchingCall.BranchTarget : 0;
     }
 
     protected override int GetCallerCount(ulong toWhere)

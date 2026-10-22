@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
+using Cpp2IL.Core.Analysis;
 using Cpp2IL.Core.Graphs;
-using Cpp2IL.Core.Graphs.Processors;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Logging;
 using Cpp2IL.Core.Utils;
@@ -17,7 +17,7 @@ namespace Cpp2IL.Core.Model.Contexts;
 /// <summary>
 /// Represents one method within the application. Can be analyzed to attempt to reconstruct the function body.
 /// </summary>
-public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
+public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider, ISIL.IOperand
 {
     /// <summary>
     /// The underlying metadata for the method.
@@ -36,24 +36,45 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
     /// </summary>
     public virtual ulong UnderlyingPointer => Definition?.MethodPointer ?? throw new("Subclasses of MethodAnalysisContext should override UnderlyingPointer");
 
-    public ulong Rva => UnderlyingPointer == 0 || LibCpp2IlMain.Binary == null ? 0 : LibCpp2IlMain.Binary.GetRva(UnderlyingPointer);
+    public ulong Rva => UnderlyingPointer == 0 ? 0 : AppContext.Binary.GetRva(UnderlyingPointer);
 
     /// <summary>
     /// The raw method body as machine code in the active instruction set.
     /// </summary>
-    public Memory<byte> RawBytes => rawMethodBody ??= InitRawBytes();
+    public BinarySlice RawBytes = BinarySlice.Empty;
 
     /// <summary>
     /// The first-stage-analyzed Instruction-Set-Independent Language Instructions.
     /// </summary>
-    public List<InstructionSetIndependentInstruction>? ConvertedIsil;
+    public List<Instruction>? ConvertedIsil;
+
+    /// <summary>
+    /// All ISIL local variables.
+    /// </summary>
+    public List<LocalVariable> Locals = [];
+
+    /// <summary>
+    /// Operands used as parameters.
+    /// </summary>
+    public List<ISIL.IOperand> ParameterOperands = [];
 
     /// <summary>
     /// The control flow graph for this method, if one is built.
     /// </summary>
     public ISILControlFlowGraph? ControlFlowGraph;
 
+    /// <summary>
+    /// Dominance info for the control flow graph.
+    /// </summary>
+    public DominatorInfo? DominatorInfo;
+
+    public List<string> AnalysisWarnings = [];
+
+    public static int MaxMethodSizeBytes = 30000; // 30KB
+
     public List<ParameterAnalysisContext> Parameters = [];
+
+    public List<LocalVariable> ParameterLocals = [];
 
     /// <summary>
     /// Does this method return void?
@@ -63,6 +84,12 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
     public bool IsStatic => (Attributes & MethodAttributes.Static) != 0;
 
     public bool IsVirtual => (Attributes & MethodAttributes.Virtual) != 0;
+
+    public bool IsAbstract => (Attributes & MethodAttributes.Abstract) != 0;
+
+    public bool IsNewSlot => (Attributes & MethodAttributes.NewSlot) != 0;
+
+    public bool IsFinal => (Attributes & MethodAttributes.Final) != 0;
 
     protected override int CustomAttributeIndex => Definition?.customAttributeIndex ?? throw new("Subclasses of MethodAnalysisContext should override CustomAttributeIndex if they have custom attributes");
 
@@ -78,13 +105,21 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
 
     public virtual MethodAttributes? OverrideAttributes { get; set; }
 
-    public MethodAttributes Attributes => OverrideAttributes ?? DefaultAttributes;
+    public MethodAttributes Attributes
+    {
+        get => OverrideAttributes ?? DefaultAttributes;
+        set => OverrideAttributes = value;
+    }
 
     public virtual MethodImplAttributes DefaultImplAttributes => Definition?.MethodImplAttributes ?? throw new($"Subclasses of MethodAnalysisContext should override {nameof(DefaultImplAttributes)}");
 
     public virtual MethodImplAttributes? OverrideImplAttributes { get; set; }
 
-    public MethodImplAttributes ImplAttributes => OverrideImplAttributes ?? DefaultImplAttributes;
+    public MethodImplAttributes ImplAttributes
+    {
+        get => OverrideImplAttributes ?? DefaultImplAttributes;
+        set => OverrideImplAttributes = value;
+    }
 
     public MethodAttributes Visibility
     {
@@ -94,7 +129,7 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
         }
         set
         {
-            OverrideAttributes = (Attributes & ~MethodAttributes.MemberAccessMask) | (value & MethodAttributes.MemberAccessMask);
+            Attributes = (Attributes & ~MethodAttributes.MemberAccessMask) | (value & MethodAttributes.MemberAccessMask);
         }
     }
 
@@ -111,95 +146,103 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
 
     private ushort Slot => Definition?.slot ?? ushort.MaxValue;
 
-    public virtual TypeAnalysisContext DefaultReturnType => DeclaringType?.DeclaringAssembly.ResolveIl2CppType(Definition?.RawReturnType) ?? throw new($"Subclasses of MethodAnalysisContext should override {nameof(DefaultReturnType)}");
+    public virtual TypeAnalysisContext DefaultReturnType => AppContext.ResolveIl2CppType(Definition?.RawReturnType) ?? throw new($"Subclasses of MethodAnalysisContext should override {nameof(DefaultReturnType)}");
 
     public TypeAnalysisContext? OverrideReturnType { get; set; }
 
     //TODO Support custom attributes on return types (v31 feature)
-    public TypeAnalysisContext ReturnType => OverrideReturnType ?? DefaultReturnType;
-    
-    protected Memory<byte>? rawMethodBody;
+    public TypeAnalysisContext ReturnType
+    {
+        get => OverrideReturnType ?? DefaultReturnType;
+        set => OverrideReturnType = value;
+    }
 
-    public MethodAnalysisContext? BaseMethod => Overrides.FirstOrDefault(m => m.DeclaringType?.IsInterface is false);
-
-    /// <summary>
-    /// The set of methods which this method overrides.
-    /// </summary>
-    public virtual IEnumerable<MethodAnalysisContext> Overrides
+    public MethodAnalysisContext? BaseMethod
     {
         get
         {
             if (Definition == null)
-                return [];
+                return null;
 
-            var declaringTypeDefinition = DeclaringType?.Definition;
-            if (declaringTypeDefinition == null)
-                return [];
-
-            var vtable = declaringTypeDefinition.VTable;
+            var vtable = DeclaringType?.Definition?.VTable;
             if (vtable == null)
-                return [];
+                return null;
 
-            return GetOverriddenMethods(declaringTypeDefinition, vtable);
-
-            bool TryGetMethodForSlot(TypeAnalysisContext declaringType, int slot, [NotNullWhen(true)] out MethodAnalysisContext? method)
+            for (var i = 0; i < vtable.Length; ++i)
             {
-                if (declaringType is GenericInstanceTypeAnalysisContext genericInstanceType)
+                var vtableEntry = vtable[i];
+                if (vtableEntry is null or { Type: not MetadataUsageType.MethodDef } || vtableEntry.AsMethod() != Definition)
+                    continue;
+
+                if (IsInterfaceSlot(this, i))
                 {
-                    var genericMethod = genericInstanceType.GenericType.Methods.FirstOrDefault(m => m.Slot == slot);
-                    if (genericMethod is not null)
-                    {
-                        method = new ConcreteGenericMethodAnalysisContext(genericMethod, genericInstanceType.GenericArguments, []);
-                        return true;
-                    }
-                }
-                else
-                {
-                    var baseMethod = declaringType.Methods.FirstOrDefault(m => m.Slot == slot);
-                    if (baseMethod is not null)
-                    {
-                        method = baseMethod;
-                        return true;
-                    }
+                    continue;
                 }
 
-                method = null;
-                return false;
+                var baseType = DeclaringType?.DefaultBaseType;
+                while (baseType is not null)
+                {
+                    if (TryGetMethodForSlot(baseType, i, out var method))
+                    {
+                        return method;
+                    }
+                    baseType = baseType.DefaultBaseType;
+                }
             }
+            return null;
+        }
+    }
 
-            IEnumerable<MethodAnalysisContext> GetOverriddenMethods(Il2CppTypeDefinition declaringTypeDefinition, MetadataUsage?[] vtable)
+    private List<MethodAnalysisContext>? _overrides;
+
+    /// <summary>
+    /// The set of interface methods which this method explicitly overrides.
+    /// </summary>
+    public List<MethodAnalysisContext> Overrides
+    {
+        get
+        {
+            // Lazy load the overrides
+            return _overrides ??= GetOverrides().ToList();
+        }
+    }
+
+    private IEnumerable<MethodAnalysisContext> GetOverrides()
+    {
+        if (Definition == null)
+            return [];
+
+        var declaringTypeDefinition = DeclaringType?.Definition;
+        if (declaringTypeDefinition == null)
+            return [];
+
+        var vtable = declaringTypeDefinition.VTable;
+        if (vtable == null)
+            return [];
+
+        return GetOverriddenMethods(declaringTypeDefinition, vtable);
+
+        IEnumerable<MethodAnalysisContext> GetOverriddenMethods(Il2CppTypeDefinition declaringTypeDefinition, MetadataUsage?[] vtable)
+        {
+            for (var i = 0; i < vtable.Length; ++i)
             {
-                for (var i = 0; i < vtable.Length; ++i)
+                var vtableEntry = vtable[i];
+                if (vtableEntry is null or { Type: not MetadataUsageType.MethodDef })
+                    continue;
+
+                if (vtableEntry.AsMethod() != Definition)
+                    continue;
+
+                // Interface inheritance
+                foreach (var interfaceOffset in declaringTypeDefinition.InterfaceOffsets)
                 {
-                    var vtableEntry = vtable[i];
-                    if (vtableEntry is null or { Type: not MetadataUsageType.MethodDef })
-                        continue;
-
-                    if (vtableEntry.AsMethod() != Definition)
-                        continue;
-
-                    // Normal inheritance
-                    var baseType = DeclaringType?.BaseType;
-                    while (baseType is not null)
+                    if (i >= interfaceOffset.offset)
                     {
-                        if (TryGetMethodForSlot(baseType, i, out var method))
+                        var interfaceTypeContext = AppContext.ResolveIl2CppType(interfaceOffset.Type);
+                        var slot = i - interfaceOffset.offset;
+                        if (TryGetMethodForSlot(interfaceTypeContext, slot, out var method) && !IsInterfaceSlot(method, slot))
                         {
                             yield return method;
-                            break; // We only want direct overrides, not the entire inheritance chain.
-                        }
-                        baseType = baseType.BaseType;
-                    }
-
-                    // Interface inheritance
-                    foreach (var interfaceOffset in declaringTypeDefinition.InterfaceOffsets)
-                    {
-                        if (i >= interfaceOffset.offset)
-                        {
-                            var interfaceTypeContext = interfaceOffset.Type.ToContext(CustomAttributeAssembly);
-                            if (interfaceTypeContext != null && TryGetMethodForSlot(interfaceTypeContext, i - interfaceOffset.offset, out var method))
-                            {
-                                yield return method;
-                            }
                         }
                     }
                 }
@@ -207,11 +250,62 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
         }
     }
 
-    private static readonly List<IBlockProcessor> blockProcessors =
-    [
-        new MetadataProcessor(),
-        new CallProcessor()
-    ];
+    private static bool IsInterfaceSlot(MethodAnalysisContext method, int slot)
+    {
+        var declaringTypeDefinition = method.DeclaringType?.Definition;
+        if (declaringTypeDefinition == null)
+            return false;
+
+        foreach (var interfaceOffset in declaringTypeDefinition.InterfaceOffsets)
+        {
+            if (slot >= interfaceOffset.offset)
+            {
+                var interfaceTypeContext = method.AppContext.ResolveIl2CppType(interfaceOffset.Type);
+                if (HasMethodForSlot(interfaceTypeContext, slot - interfaceOffset.offset))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static bool HasMethodForSlot(TypeAnalysisContext declaringType, int slot)
+    {
+        if (declaringType is GenericInstanceTypeAnalysisContext genericInstanceType)
+        {
+            return genericInstanceType.GenericType.Methods.Any(m => m.Slot == slot);
+        }
+        else
+        {
+            return declaringType.Methods.Any(m => m.Slot == slot);
+        }
+    }
+
+    private static bool TryGetMethodForSlot(TypeAnalysisContext declaringType, int slot, [NotNullWhen(true)] out MethodAnalysisContext? method)
+    {
+        if (declaringType is GenericInstanceTypeAnalysisContext genericInstanceType)
+        {
+            var genericMethod = genericInstanceType.GenericType.Methods.FirstOrDefault(m => m.Slot == slot);
+            if (genericMethod is not null)
+            {
+                method = new ConcreteGenericMethodAnalysisContext(genericMethod, genericInstanceType.GenericArguments, []);
+                return true;
+            }
+        }
+        else
+        {
+            var baseMethod = declaringType.Methods.FirstOrDefault(m => m.Slot == slot);
+            if (baseMethod is not null)
+            {
+                method = baseMethod;
+                return true;
+            }
+        }
+
+        method = null;
+        return false;
+    }
 
     public MethodAnalysisContext(Il2CppMethodDefinition? definition, TypeAnalysisContext parent) : base(definition?.token ?? 0, parent.AppContext)
     {
@@ -228,43 +322,36 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
                 Parameters.Add(new(parameterDefinition, i, this));
             }
         }
-        else
-            rawMethodBody = Array.Empty<byte>();
     }
 
-    [MemberNotNull(nameof(rawMethodBody))]
     public void EnsureRawBytes()
-    {
-        rawMethodBody ??= InitRawBytes();
-    }
-
-    private Memory<byte> InitRawBytes()
     {
         //Some abstract methods (on interfaces, no less) apparently have a body? Unity doesn't support default interface methods so idk what's going on here.
         //E.g. UnityEngine.Purchasing.AppleCore.dll: UnityEngine.Purchasing.INativeAppleStore::SetUnityPurchasingCallback on among us (itch.io build)
-        if (Definition != null && Definition.MethodPointer != 0 && !Definition.Attributes.HasFlag(MethodAttributes.Abstract))
+        if (UnderlyingPointer != 0 && !DefaultAttributes.HasFlag(MethodAttributes.Abstract))
         {
-            var ret = AppContext.InstructionSet.GetRawBytesForMethod(this, false);
+            RawBytes = AppContext.InstructionSet.GetRawBytesForMethod(this, this is AttributeGeneratorMethodAnalysisContext);
 
-            if (ret.Length == 0)
+            if (RawBytes.Length == 0)
             {
-                Logger.VerboseNewline("\t\t\tUnexpectedly got 0-byte method body for " + this + $". Pointer was 0x{Definition.MethodPointer:X}", "MAC");
+                Logger.VerboseNewline("\t\t\tUnexpectedly got 0-byte method body for " + this + $". Pointer was 0x{UnderlyingPointer:X}", "MAC");
             }
-
-            return ret;
         }
-        else
-            return Array.Empty<byte>();
     }
 
     protected MethodAnalysisContext(ApplicationAnalysisContext context) : base(0, context)
-    {
-        rawMethodBody = Array.Empty<byte>();
-    }
+    { }
 
     [MemberNotNull(nameof(ConvertedIsil))]
     public void Analyze()
     {
+        if (MaxMethodSizeBytes != -1 && RawBytes.Length > MaxMethodSizeBytes)
+        {
+            Logger.WarnNewline($"Method {FullName} is too big ({RawBytes.Length} bytes), skipping analysis.");
+            ConvertedIsil = [];
+            return;
+        }
+
         if (ConvertedIsil != null)
             return;
 
@@ -275,27 +362,111 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
         }
 
         ConvertedIsil = AppContext.InstructionSet.GetIsilFromMethod(this);
+        ParameterOperands = AppContext.InstructionSet.GetParameterOperandsFromMethod(this);
 
         if (ConvertedIsil.Count == 0)
             return; //Nothing to do, empty function
 
-        ControlFlowGraph = new ISILControlFlowGraph();
-        ControlFlowGraph.Build(ConvertedIsil);
+        ControlFlowGraph = new ISILControlFlowGraph(ConvertedIsil);
 
-        // Post step to convert metadata usage. Ldstr Opcodes etc.
-        foreach (var block in ControlFlowGraph.Blocks)
-        {
-            foreach (var converter in blockProcessors)
-            {
-                converter.Process(this, block);
-            }
-        }
+        // Indirect jumps/calls should probably be resolved here before stack analysis
+
+        StackAnalyzer.Analyze(this);
+
+        // Dominator info must be computed after stack analysis, which removes unreachable/empty
+        // blocks and would otherwise leave the dominator tree out of sync with the graph SSA sees.
+        DominatorInfo = new DominatorInfo(ControlFlowGraph);
+
+        // Create locals
+        SsaForm.Build(this);
+        LocalVariables.CreateAll(this);
+
+        // Fold the explicit per-comparison flag arithmetic back into single relational comparisons,
+        // then eliminate the now-dead flag computations. Both run in SSA form, where each
+        // flag/temporary has a single, version-stable definition.
+        FlagConditionRecovery.Run(this);
+        DeadCodeEliminator.Run(this);
+
+        // Resolve call targets, strings and getters, then run the combined type-propagation and
+        // field-resolution fixpoint - all while still in SSA form, so every local is
+        // single-assignment and a type, once known, is stable for that value.
+        MetadataResolver.ResolveAll(this);
+
+        // Resolve KeyFunctionAddress calls, then collect what removing the write barriers left dead.
+        KeyFunctionRecovery.Run(this);
+        DeadCodeEliminator.Run(this);
+
+        // Delete any il2cpp_codegen_initialize_runtime_metadata/il2cpp_codegen_initialize_method
+        MetadataInitGuardRemover.Run(this);
+
+        // Delete inlined GC write barriers
+        WriteBarrierRecovery.Run(this);
+
+        InjectedCheckRemover.Run(this);
+
+        InterfaceDispatchRecovery.Run(this);
+
+        LocalVariables.ResolveTypesAndFields(this);
+
+        // Needs the MethodInfo* receivers typed, so runs after resolution unlike the class-init guards
+        MetadataInitGuardRemover.RunRgctx(this);
+
+        MetadataInitGuardRemover.RewriteUnguardedInits(this);
+
+        // Needs type resolved for delegate locals
+        DelegateInvokeRecovery.Run(this);
+        BooleanFlagSimplifier.Run(this);
+        DeadCodeEliminator.Run(this);
+
+        // Copy/constant propagation belongs in SSA, where one definition dominates all uses and phis
+        // make joins explicit, so forwarding a value is an unconditional global substitution.
+        SsaSimplifier.Run(this);
+
+        // Folding a constant exposes more to propagate
+        for (var i = 0; i < 8 && ConstantFolder.Run(this); i++)
+            SsaSimplifier.Run(this);
+
+        InternalCallGuardRemover.Run(this);
+        KeyFunctionRecovery.Run(this);
+
+        SsaForm.Remove(this);
+
+        // Phi removal leaves a copy per merged version, most of which can share one local
+        CopyCoalescer.Run(this);
+
+        // Now out of SSA: clean up the per-edge copies that phi removal introduced (a local can have
+        // several definitions merging at a join here, so this pass propagates conservatively), then
+        // drop dead locals.
+        Simplifier.Simplify(this);
+
+        // Fix float literals
+        FloatLiteralRecovery.Run(this);
+
+        // Runs late so the array type and length reach the allocation call as operands after copy propagation has inlined them
+        ArrayRecovery.Run(this);
+
+        LocalVariables.TypeAddressedLocals(this);
+
+        ConstantBranchFolder.Run(this);
+
+        // Near-last, as it depends on the final block layout
+        EqualityBranchInverter.Run(this);
+
+        // Every call that was going to resolve now has. Any argument registers it ended up
+        // not using are just keeping their definitions alive, so drop them.
+        CallArgumentTrimmer.Run(this);
+        DeadCodeEliminator.Run(this);
+
+        LocalVariables.RemoveUnused(this);
     }
+
+    public void AddWarning(string warning) => AnalysisWarnings.Add(warning);
 
     public void ReleaseAnalysisData()
     {
         ConvertedIsil = null;
         ControlFlowGraph = null;
+        DominatorInfo = null;
     }
 
     public ConcreteGenericMethodAnalysisContext MakeGenericInstanceMethod(params IEnumerable<TypeAnalysisContext> methodGenericParameters)

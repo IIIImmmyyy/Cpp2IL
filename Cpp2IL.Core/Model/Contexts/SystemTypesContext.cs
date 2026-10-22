@@ -29,6 +29,8 @@ public class SystemTypesContext
     public TypeAnalysisContext SystemTypeType { get; }
     public TypeAnalysisContext SystemAttributeType { get; }
     public TypeAnalysisContext? UnmanagedCallersOnlyAttributeType { get; }
+    public TypeAnalysisContext EnumType { get; private set; }
+    public TypeAnalysisContext SystemValueTypeType { get; }
 
     public SystemTypesContext(ApplicationAnalysisContext appContext)
     {
@@ -68,6 +70,9 @@ public class SystemTypesContext
         SystemAttributeType = systemAssembly.GetTypeByFullName("System.Attribute")!;
         
         UnmanagedCallersOnlyAttributeType = systemAssembly.GetTypeByFullName("System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute");
+        
+        EnumType = systemAssembly.GetTypeByFullName("System.Enum")!;
+        SystemValueTypeType = systemAssembly.GetTypeByFullName("System.ValueType")!;
     }
 
     public bool TryGetIl2CppTypeEnum(TypeAnalysisContext context, out Il2CppTypeEnum value)

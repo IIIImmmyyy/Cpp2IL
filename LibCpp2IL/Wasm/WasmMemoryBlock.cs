@@ -40,4 +40,10 @@ public class WasmMemoryBlock : ClassReadingBinaryReader
         is32Bit = true;
         Bytes = ((MemoryStream)BaseStream).ToArray();
     }
+
+    protected override void OnReadableCreated(ReadableClass instance)
+    {
+        if(_file.Context != null)
+            instance.OwningContext = _file.Context;
+    }
 }

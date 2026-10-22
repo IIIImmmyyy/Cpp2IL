@@ -1,25 +1,34 @@
-﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Cpp2IL.Core.Logging;
 using Cpp2IL.Core.Model.Contexts;
 using Cpp2IL.Core.Utils;
 using Iced.Intel;
-using LibCpp2IL;
-using LibCpp2IL.Reflection;
 
 namespace Cpp2IL.Core.Il2CppApiFunctions;
 
 public class X86KeyFunctionAddresses : BaseKeyFunctionAddresses
 {
+    // Corlib methods which assign a reference to a field and so are followed by a write barrier. Several,
+    // because any one of them can be stripped, and because agreement between them rules out a false match.
+    private static readonly (string Namespace, string Type, string Method)[] WriteBarrierAnchors =
+    [
+        ("System.Threading.Tasks", "Task`1", "GetAwaiter"),
+        ("System.Threading.Tasks", "Task", "GetAwaiter"),
+        ("System.Threading", "ExecutionContext", "get_LogicalCallContext"),
+        ("System.Threading", "CancellationTokenSource", "get_Token"),
+        ("System", "BadImageFormatException", "get_Message"),
+    ];
+
     private InstructionList? _cachedDisassembledBytes;
 
     private InstructionList DisassembleTextSection()
     {
         if (_cachedDisassembledBytes == null)
         {
-            var toDisasm = LibCpp2IlMain.Binary!.GetEntirePrimaryExecutableSection();
-            _cachedDisassembledBytes = X86Utils.Disassemble(toDisasm, LibCpp2IlMain.Binary.GetVirtualAddressOfPrimaryExecutableSection());
+            var binary = _appContext.Binary;
+            var toDisasm = binary.GetEntirePrimaryExecutableSection();
+            _cachedDisassembledBytes = X86Utils.Disassemble(toDisasm, binary.GetVirtualAddressOfPrimaryExecutableSection(), binary.is32Bit);
         }
 
         return _cachedDisassembledBytes;
@@ -45,13 +54,14 @@ public class X86KeyFunctionAddresses : BaseKeyFunctionAddresses
             if (addressesToIgnore.Contains(matchingJmp.IP)) continue;
 
             //Find this instruction in the raw file
-            var offsetInPe = (ulong)LibCpp2IlMain.Binary!.MapVirtualAddressToRaw(matchingJmp.IP);
-            if (offsetInPe == 0 || offsetInPe == (ulong)(LibCpp2IlMain.Binary!.RawLength - 1))
+            var binary = _appContext.Binary;
+            var offsetInPe = (ulong)binary.MapVirtualAddressToRaw(matchingJmp.IP);
+            if (offsetInPe == 0 || offsetInPe == (ulong)(binary.RawLength - 1))
                 continue;
 
             //get next and previous bytes
-            var previousByte = LibCpp2IlMain.Binary.GetByteAtRawAddress(offsetInPe - 1);
-            var nextByte = LibCpp2IlMain.Binary.GetByteAtRawAddress(offsetInPe + (ulong)matchingJmp.Length);
+            var previousByte = binary.GetByteAtRawAddress(offsetInPe - 1);
+            var nextByte = binary.GetByteAtRawAddress(offsetInPe + (ulong)matchingJmp.Length);
 
             //Double-cc = thunk
             if (previousByte == 0xCC && nextByte == 0xCC)
@@ -68,7 +78,7 @@ public class X86KeyFunctionAddresses : BaseKeyFunctionAddresses
                         //Move to next jmp
                         break;
 
-                    if (LibCpp2IlMain.Binary!.GetByteAtRawAddress(offsetInPe - backtrack) == 0xCC)
+                    if (binary.GetByteAtRawAddress(offsetInPe - backtrack) == 0xCC)
                     {
                         yield return matchingJmp.IP - (backtrack - 1);
                         break;
@@ -81,7 +91,7 @@ public class X86KeyFunctionAddresses : BaseKeyFunctionAddresses
     protected override ulong GetObjectIsInstFromSystemType()
     {
         Logger.Verbose("\tTrying to use System.Type::IsInstanceOfType to find il2cpp::vm::Object::IsInst...");
-        var typeIsInstanceOfType = LibCpp2IlReflection.GetType("Type", "System")?.Methods?.FirstOrDefault(m => m.Name == "IsInstanceOfType");
+        var typeIsInstanceOfType = ReflectionCache.GetType("Type", "System")?.Methods?.FirstOrDefault(m => m.Name == "IsInstanceOfType");
         if (typeIsInstanceOfType == null)
         {
             Logger.VerboseNewline("Type or method not found, aborting.");
@@ -94,7 +104,7 @@ public class X86KeyFunctionAddresses : BaseKeyFunctionAddresses
         //The last call is to Object::IsInst
 
         Logger.Verbose($"IsInstanceOfType found at 0x{typeIsInstanceOfType.MethodPointer:X}...");
-        var instructions = X86Utils.GetMethodBodyAtVirtAddressNew(typeIsInstanceOfType.MethodPointer, true);
+        var instructions = X86Utils.GetMethodBodyAtVirtAddressNew(typeIsInstanceOfType.MethodPointer, true, _appContext);
 
         var lastCall = instructions.LastOrDefault(i => i.Mnemonic == Mnemonic.Call);
 
@@ -108,27 +118,119 @@ public class X86KeyFunctionAddresses : BaseKeyFunctionAddresses
         return lastCall.NearBranchTarget;
     }
 
-    protected override ulong FindFunctionThisIsAThunkOf(ulong thunkPtr, bool prioritiseCall = false)
+    protected override ulong GetWriteBarrier()
     {
-        var instructions = X86Utils.GetMethodBodyAtVirtAddressNew(thunkPtr, true);
+        Logger.Verbose("\tLooking for Il2CppCodeGenWriteBarrier via corlib reference-field stores...");
 
-        try
+        var votes = new Dictionary<ulong, int>();
+
+        foreach (var (@namespace, typeName, methodName) in WriteBarrierAnchors)
         {
-            var target = prioritiseCall ? Mnemonic.Call : Mnemonic.Jmp;
-            var matchingCall = instructions.FirstOrDefault(i => i.Mnemonic == target);
+            var method = ReflectionCache.GetType(typeName, @namespace)?.Methods?.FirstOrDefault(m => m.Name == methodName);
 
-            if (matchingCall.Mnemonic == Mnemonic.INVALID)
-            {
-                target = target == Mnemonic.Call ? Mnemonic.Jmp : Mnemonic.Call;
-                matchingCall = instructions.First(i => i.Mnemonic == target);
-            }
+            if (method == null || method.MethodPointer == 0)
+                continue;
 
-            return matchingCall.NearBranchTarget;
+            var body = X86Utils.GetMethodBodyAtVirtAddressNew(method.MethodPointer, false, _appContext);
+
+            foreach (var target in FindWriteBarrierCalls(body).Distinct())
+                votes[target] = (votes.TryGetValue(target, out var count) ? count : 0) + 1;
         }
-        catch (Exception)
+
+        var best = 0ul;
+        var bestVotes = 0;
+
+        foreach (var vote in votes)
         {
+            if (vote.Value <= bestVotes)
+                continue;
+
+            best = vote.Key;
+            bestVotes = vote.Value;
+        }
+
+        if (best == 0)
+        {
+            Logger.VerboseNewline("Not found. Write barriers disabled?");
             return 0;
         }
+
+        Logger.VerboseNewline($"Found at 0x{best:X} (found in {bestVotes} of {WriteBarrierAnchors.Length} checked methods)");
+
+        return best;
+    }
+
+    /// <summary>
+    /// Returns the target of every call in <paramref name="body"/> which is preceded by both a 64-bit store
+    /// into some slot and an <c>lea rcx</c> of that same slot - that is, Il2CppCodeGenWriteBarrier(&amp;slot, value)
+    /// immediately following the store it guards. The two setup instructions appear in either order.
+    /// </summary>
+    private static IEnumerable<ulong> FindWriteBarrierCalls(InstructionList body)
+    {
+        const int window = 6;
+
+        for (var i = 0; i < body.Count; i++)
+        {
+            var call = body[i];
+
+            if (call.Mnemonic != Mnemonic.Call || call.Op0Kind != OpKind.NearBranch64)
+                continue;
+
+            if (IsPrecededByGuardedStore(body, i, window))
+                yield return call.NearBranchTarget;
+        }
+    }
+
+    private static bool IsPrecededByGuardedStore(InstructionList body, int callIndex, int window)
+    {
+        var start = callIndex - window < 0 ? 0 : callIndex - window;
+
+        for (var i = start; i < callIndex; i++)
+        {
+            var lea = body[i];
+
+            if (lea.Mnemonic != Mnemonic.Lea || lea.Op0Register != Register.RCX || lea.MemoryBase == Register.None)
+                continue;
+
+            for (var j = start; j < callIndex; j++)
+            {
+                var store = body[j];
+
+                if (store.Mnemonic != Mnemonic.Mov || store.Op0Kind != OpKind.Memory || store.Op1Kind != OpKind.Register)
+                    continue;
+
+                if (store.MemorySize is not (MemorySize.UInt64 or MemorySize.Int64))
+                    continue;
+
+                if (store.MemoryBase == lea.MemoryBase && store.MemoryIndex == lea.MemoryIndex
+                    && store.MemoryDisplacement64 == lea.MemoryDisplacement64)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected override ulong FindFunctionThisIsAThunkOf(ulong thunkPtr, bool prioritiseCall = false)
+    {
+        var instructions = X86Utils.GetMethodBodyAtVirtAddressNew(thunkPtr, true, _appContext);
+
+        var target = prioritiseCall ? Mnemonic.Call : Mnemonic.Jmp;
+        var matchingCall = instructions.FirstOrDefault(i => i.Mnemonic == target);
+
+        if (matchingCall.Mnemonic == Mnemonic.INVALID)
+        {
+            target = target == Mnemonic.Call ? Mnemonic.Jmp : Mnemonic.Call;
+            matchingCall = instructions.FirstOrDefault(i => i.Mnemonic == target);
+        }
+
+        return matchingCall.Mnemonic != Mnemonic.INVALID ? matchingCall.NearBranchTarget : 0;
+    }
+    
+    protected override ulong FindFirstCallTargetInMethod(ulong methodVa)
+    {
+        var disasm = X86Utils.GetMethodBodyAtVirtAddressNew(methodVa, false, _appContext);
+        return disasm.FirstOrDefault(i => i.Mnemonic == Mnemonic.Call).NearBranchTarget;
     }
 
     protected override int GetCallerCount(ulong toWhere)

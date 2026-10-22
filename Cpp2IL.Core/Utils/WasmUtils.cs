@@ -7,7 +7,6 @@ using Cpp2IL.Core.Model.Contexts;
 using LibCpp2IL;
 using LibCpp2IL.BinaryStructures;
 using LibCpp2IL.Metadata;
-using LibCpp2IL.Reflection;
 using LibCpp2IL.Wasm;
 
 namespace Cpp2IL.Core.Utils;
@@ -21,25 +20,27 @@ public static class WasmUtils
     {
         var instanceParam = definition.IsStatic ? "" : "i";
 
-        //Something still off about p/invoke functions. They do have methodinfo args, but something is wrong somewhere.
-        
-        //Also, this is STILL wrong for a lot of methods in DateTimeFormat and TimeZoneInfo.
-        //It feels like it's something to do with when DateTime is considered a struct and when it's considered a class.
-        //But I can find no rhyme nor reason to it.
+        return $"{GetReturnTypeSignature(definition)}{instanceParam}{string.Join("", definition.Parameters!.Select(p => GetSignatureLetter(p.ParameterType, p.IsRef)))}i"; //Add an extra i on the end for the method info param
+    }
 
-        var returnTypeSignature = definition.ReturnType.IsWasmPrimitive()
+    //Something still off about p/invoke functions. They do have methodinfo args, but something is wrong somewhere.
+
+    //Also, this is STILL wrong for a lot of methods in DateTimeFormat and TimeZoneInfo.
+    //It feels like it's something to do with when DateTime is considered a struct and when it's considered a class.
+    //But I can find no rhyme nor reason to it.
+
+    private static string GetReturnTypeSignature(MethodAnalysisContext definition) =>
+        definition.ReturnType.IsWasmPrimitive()
             ? GetSignatureLetter(definition.ReturnType)
             : definition.ReturnType switch
             {
                 { Namespace: nameof(System), Name: "Void" } => "v",
-                { IsValueType: true, Definition: null or { Size: < 0 or > 8 } } => "vi", //Large or Generic Struct returns have a void return type, but the actual return value is the first parameter.
-                { IsValueType: true, Definition.Size: > 4 } => "j", //Medium structs are returned as longs
-                { IsValueType: true, Definition.Size: <= 4 } => "i", //Small structs are returned as ints
-                _ => GetSignatureLetter(definition.ReturnType!)
+                { IsValueType: true, Definition: null or { Size: > 8 } } => "vi", //Large or Generic Struct returns have a void return type, but the actual return value is the first parameter.
+                { IsValueType: true, Definition.Size: > 0 and < 4 } => "i", //Small structs are returned as ints
+                _ => GetSignatureLetter(definition.ReturnType!, forReturn: true)
             };
 
-        return $"{returnTypeSignature}{instanceParam}{string.Join("", definition.Parameters!.Select(p => GetSignatureLetter(p.ParameterType, p.IsRef)))}i"; //Add an extra i on the end for the method info param
-    }
+    public static bool HasReturnBuffer(MethodAnalysisContext context) => GetReturnTypeSignature(context) == "vi";
 
     public static bool IsWasmPrimitive(this TypeAnalysisContext type)
     {
@@ -49,7 +50,7 @@ public static class WasmUtils
         return typeEnum is >= Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN and <= Il2CppTypeEnum.IL2CPP_TYPE_R8;
     }
 
-    private static string GetSignatureLetter(TypeAnalysisContext type, bool isRefOrOut = false)
+    private static string GetSignatureLetter(TypeAnalysisContext type, bool isRefOrOut = false, bool forReturn = false)
     {
         if (isRefOrOut)
             //ref/out params are passed as pointers 
@@ -62,6 +63,13 @@ public static class WasmUtils
         if (type.IsEnumType)
             type = type.EnumUnderlyingType ?? throw new($"Enum type {type} has no underlying type");
 
+        if (type.IsValueType && type is { Namespace: nameof(System), Name: nameof(DateTime) or nameof(TimeSpan) })
+            return "j"; //gross hardcoding but i think this is literally the only 2 cases?
+        
+        if(forReturn && type.IsValueType && type.Fields.Count(f => !f.IsStatic && (f.Attributes & FieldAttributes.Literal) == 0) > 1)
+            //this seems to work in my testing, at least
+            return "vi";
+
         // var typeDefinition = type.BaseType ?? type.AppContext.SystemTypes.SystemInt32Type;
 
         return type.Name switch
@@ -71,15 +79,14 @@ public static class WasmUtils
             "Single" => "f",
             "Double" => "d",
             "Int32" => "i",
-            _ when !type.IsWasmPrimitive() && type is { IsValueType: true, IsEnumType: false, Definition.Size: <= 8 and > 0 } => "j", //TODO check - value types < 16 bytes (including base object header which is irrelevant here) are passed directly as long?
             _ => "i"
         };
     }
 
-    public static string GetGhidraFunctionName(WasmFunctionDefinition functionDefinition)
+    public static string GetGhidraFunctionName(Il2CppBinary binary, WasmFunctionDefinition functionDefinition)
     {
         var index = functionDefinition.IsImport
-            ? ((WasmFile)LibCpp2IlMain.Binary!).FunctionTable.IndexOf(functionDefinition)
+            ? ((WasmFile)binary).FunctionTable.IndexOf(functionDefinition)
             : functionDefinition.FunctionTableIndex;
 
         return $"unnamed_function_{index}";
@@ -101,52 +108,18 @@ public static class WasmUtils
     {
         if (context.Definition == null)
             throw new($"Attempted to get wasm definition for probably-injected method context: {context}");
-        
+
         //First, we have to calculate the signature
         var signature = BuildSignature(context);
         try
         {
-            return ((WasmFile)LibCpp2IlMain.Binary!).GetFunctionFromIndexAndSignature(context.Definition.MethodPointer, signature);
+            return ((WasmFile)context.AppContext.Binary).GetFunctionFromIndexAndSignature(context.UnderlyingPointer, signature);
         }
         catch (Exception e)
         {
-            throw new($"Failed to find wasm definition for {context}\nwhich has params {context.Parameters?.ToStringEnumerable()}", e);
+            throw new($"Failed to find wasm definition for {context}\nwhich has params {context.Parameters.ToStringEnumerable()}", e);
         }
     }
-
-    // private static void CalculateAllMethodDefinitionIndices()
-    // {
-    //     foreach (var il2CppMethodDefinition in LibCpp2IlMain.TheMetadata!.methodDefs)
-    //     {
-    //         var methodDefinition = il2CppMethodDefinition;
-    //
-    //         try
-    //         {
-    //             var wasmDef = GetWasmDefinition(methodDefinition);
-    //             var index = ((WasmFile)LibCpp2IlMain.Binary!).FunctionTable.IndexOf(wasmDef);
-    //
-    //             if (!MethodDefinitionIndices.TryGetValue(index, out var mDefs))
-    //                 MethodDefinitionIndices[index] = mDefs = [];
-    //
-    //             mDefs.Add(methodDefinition);
-    //         }
-    //         catch (Exception)
-    //         {
-    //             //Ignore
-    //         }
-    //     }
-    // }
-    //
-    // public static List<Il2CppMethodDefinition>? GetMethodDefinitionsAtIndex(int index)
-    // {
-    //     if (MethodDefinitionIndices.Count == 0)
-    //         CalculateAllMethodDefinitionIndices();
-    //
-    //     if (MethodDefinitionIndices.TryGetValue(index, out var methodDefinitions))
-    //         return methodDefinitions;
-    //
-    //     return null;
-    // }
 
     public static Dictionary<string, string> ExtractAndParseDynCallRemaps(string frameworkJsFile)
     {

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Cpp2IL.Core.Extensions;
@@ -25,7 +24,7 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
     /// <summary>
     /// On V29, stores the custom attribute blob. Pre-29, stores the bytes for the custom attribute generator function.
     /// </summary>
-    public Memory<byte> RawIl2CppCustomAttributeData = Memory<byte>.Empty;
+    public BinarySlice RawIl2CppCustomAttributeData = BinarySlice.Empty;
 
     /// <summary>
     /// Stores the analyzed custom attribute data once analysis has actually run.
@@ -88,7 +87,7 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
 
     protected void InitCustomAttributeData()
     {
-        if(IsInjected)
+        if (IsInjected)
             return;
         
         _hasInitCustomAttributeData = true;
@@ -100,7 +99,7 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
                 return;
 
             var (blobStart, blobEnd) = offsets.Value;
-            RawIl2CppCustomAttributeData = AppContext.Metadata.ReadByteArrayAtRawAddress(blobStart, (int)(blobEnd - blobStart));
+            RawIl2CppCustomAttributeData = new BinarySlice(AppContext.Metadata.ReadByteArrayAtRawAddress(blobStart, (int)(blobEnd - blobStart)));
 
             return;
         }
@@ -112,14 +111,13 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
 
         if (AttributeTypeRange == null || AttributeTypeRange.count == 0)
         {
-            RawIl2CppCustomAttributeData = Array.Empty<byte>();
             AttributeTypes = [];
             return; //No attributes
         }
 
         AttributeTypes = Enumerable.Range(AttributeTypeRange.start, AttributeTypeRange.count)
-            .Select(attrIdx => AppContext.Metadata!.attributeTypes![attrIdx]) //Not null because we've checked we're not on v29
-            .Select(typeIdx => AppContext.Binary!.GetType(typeIdx))
+            .Select(attrIdx => AppContext.Metadata.attributeTypes![attrIdx]) //Not null because we've checked we're not on v29
+            .Select(typeIdx => AppContext.Binary.GetType(Il2CppVariableWidthIndex<Il2CppType>.MakeTemporaryForFixedWidthUsage(typeIdx)))
             .ToList();
     }
 
@@ -129,7 +127,7 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
             return null;
 
         var target = new Il2CppCustomAttributeDataRange() { token = Token };
-        var caIndex = AppContext.Metadata.AttributeDataRanges.BinarySearch
+        var caIndex = AppContext.Metadata.AttributeDataRanges!.BinarySearch
         (
             CustomAttributeAssembly.Definition.Image.customAttributeStart,
             (int)CustomAttributeAssembly.Definition.Image.customAttributeCount,
@@ -139,15 +137,14 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
 
         if (caIndex < 0)
         {
-            RawIl2CppCustomAttributeData = Array.Empty<byte>();
             return null;
         }
 
         var attributeDataRange = AppContext.Metadata.AttributeDataRanges[caIndex];
         var next = AppContext.Metadata.AttributeDataRanges[caIndex + 1];
 
-        var blobStart = AppContext.Metadata.metadataHeader.attributeDataOffset + attributeDataRange.startOffset;
-        var blobEnd = AppContext.Metadata.metadataHeader.attributeDataOffset + next.startOffset;
+        var blobStart = AppContext.Metadata.metadataHeader.attributeData.Offset + attributeDataRange.startOffset;
+        var blobEnd = AppContext.Metadata.metadataHeader.attributeData.Offset + next.startOffset;
         return (blobStart, blobEnd);
     }
 
@@ -158,7 +155,6 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
         {
             if (rangeIndex < 0)
             {
-                RawIl2CppCustomAttributeData = Array.Empty<byte>();
                 return;
             }
 
@@ -169,7 +165,6 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
             catch (IndexOutOfRangeException)
             {
                 Logger.WarnNewline("Custom attribute generator out of range for " + this, "CA Restore");
-                RawIl2CppCustomAttributeData = Array.Empty<byte>();
                 return;
             }
         }
@@ -177,7 +172,6 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
         {
             if(AttributeTypeRange == null || AttributeTypeRange.count == 0 || CustomAttributeAssembly.Definition is null)
             {
-                RawIl2CppCustomAttributeData = Array.Empty<byte>();
                 return;
             }
             
@@ -189,12 +183,12 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
 
         if (generatorPtr == 0 || !AppContext.Binary.TryMapVirtualAddressToRaw(generatorPtr, out _))
         {
-            Logger.WarnNewline($"Supposedly had custom attributes ({string.Join(", ", AttributeTypes)}), but generator was null for " + this, "CA Restore");
-            RawIl2CppCustomAttributeData = Memory<byte>.Empty;
+            Logger.WarnNewline($"Supposedly had custom attributes ({string.Join(", ", AttributeTypes ?? [])}), but generator was null for " + this, "CA Restore");
             return;
         }
 
         CaCacheGeneratorAnalysis = new(generatorPtr, AppContext, this);
+        CaCacheGeneratorAnalysis.EnsureRawBytes();
         RawIl2CppCustomAttributeData = CaCacheGeneratorAnalysis.RawBytes;
     }
 
@@ -248,7 +242,7 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
             var attributeTypeContext = AppContext.ResolveContextForType(typeDef) ?? throw new("Unable to find type " + typeDef.FullName);
 
             AnalyzedCustomAttribute attribute;
-            if (attributeTypeContext.Methods.FirstOrDefault(c => c.Name == ".ctor" && c.Definition!.parameterCount == 0) is { } constructor)
+            if (attributeTypeContext.Methods.FirstOrDefault(c => c.Name == ".ctor" && c.Parameters.Count == 0) is { } constructor)
             {
                 attribute = new(constructor);
             }
@@ -280,23 +274,20 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
 
         //Diagnostic data
         var startOfData = blobStream.Position;
-        var perAttributeStartOffsets = new Dictionary<Il2CppMethodDefinition, long>();
+        var perAttributeStartOffsets = new Dictionary<MethodAnalysisContext, long>();
 
         CustomAttributes = [];
         foreach (var constructor in constructors)
         {
             perAttributeStartOffsets[constructor] = blobStream.Position;
 
-            var attributeTypeContext = AppContext.ResolveContextForType(constructor.DeclaringType!) ?? throw new($"Unable to find type {constructor.DeclaringType!.FullName}");
-            var attributeMethodContext = attributeTypeContext.GetMethod(constructor) ?? throw new($"Unable to find method {constructor.Name} in type {attributeTypeContext.Definition?.FullName}");
-
             try
             {
-                CustomAttributes.Add(V29AttributeUtils.ReadAttribute(blobStream, attributeMethodContext, AppContext));
+                CustomAttributes.Add(V29AttributeUtils.ReadAttribute(blobStream, constructor, AppContext));
             }
             catch (Exception e)
             {
-                Logger.ErrorNewline($"Failed to read attribute data for {constructor}, which has parameters {string.Join(", ", constructor.Parameters!.Select(p => p.Type))}", "CA Restore");
+                Logger.ErrorNewline($"Failed to read attribute data for {constructor}, which has parameters {string.Join(", ", constructor.Parameters.Select(p => p.ParameterType))}", "CA Restore");
                 Logger.ErrorNewline($"This member ({ToString()}) has {RawIl2CppCustomAttributeData.Length} bytes of data starting at 0x{GetV29BlobOffsets()!.Value.blobStart:X}", "CA Restore");
                 Logger.ErrorNewline($"The post-constructor data started at 0x{startOfData:X} bytes into our blob", "CA Restore");
                 Logger.ErrorNewline($"Data for this constructor started at 0x{perAttributeStartOffsets[constructor]:X} bytes into our blob, we are now 0x{blobStream.Position:X} bytes into the blob", "CA Restore");

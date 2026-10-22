@@ -1,4 +1,3 @@
-using System;
 using System.Linq;
 using System.Text;
 using LibCpp2IL.Metadata;
@@ -8,19 +7,34 @@ namespace LibCpp2IL.BinaryStructures;
 
 public class Il2CppMethodSpec : ReadableClass
 {
-    public int methodDefinitionIndex;
-    public int classIndexIndex;
-    public int methodIndexIndex;
+    public Il2CppVariableWidthIndex<Il2CppMethodDefinition> methodDefinitionIndex;
+    public Il2CppVariableWidthIndex<Il2CppGenericInst> classIndexIndex;
+    public Il2CppVariableWidthIndex<Il2CppGenericInst> methodIndexIndex;
 
-    public virtual Il2CppMethodDefinition? MethodDefinition => LibCpp2IlMain.TheMetadata?.methodDefs[methodDefinitionIndex];
+    public virtual Il2CppMethodDefinition? MethodDefinition
+        => OwningContext.Metadata.GetMethodDefinitionFromIndex(methodDefinitionIndex);
 
-    public virtual Il2CppGenericInst? GenericClassInst => LibCpp2IlMain.Binary?.GetGenericInst(classIndexIndex);
+    public virtual Il2CppGenericInst? GenericClassInst
+    {
+        get
+        {
+            if (classIndexIndex.IsNull) return null;
+            return OwningContext.Binary.GetGenericInst(classIndexIndex);
+        }
+    }
 
-    public virtual Il2CppGenericInst? GenericMethodInst => LibCpp2IlMain.Binary?.GetGenericInst(methodIndexIndex);
+    public virtual Il2CppGenericInst? GenericMethodInst
+    {
+        get
+        {
+            if (methodIndexIndex.IsNull) return null;
+            return OwningContext.Binary.GetGenericInst(methodIndexIndex);
+        }
+    }
 
-    public virtual Il2CppTypeReflectionData[] GenericClassParams => classIndexIndex == -1 ? [] : LibCpp2ILUtils.GetGenericTypeParams(GenericClassInst!)!;
+    public virtual Il2CppType[] GenericClassParams => classIndexIndex.IsNull ? [] : GenericClassInst!.Types;
 
-    public virtual Il2CppTypeReflectionData[] GenericMethodParams => methodIndexIndex == -1 ? [] : LibCpp2ILUtils.GetGenericTypeParams(GenericMethodInst!)!;
+    public virtual Il2CppType[] GenericMethodParams => methodIndexIndex.IsNull ? [] : GenericMethodInst!.Types;
 
     public override string ToString()
     {
@@ -30,12 +44,12 @@ public class Il2CppMethodSpec : ReadableClass
 
         sb.Append(MethodDefinition?.DeclaringType?.FullName);
 
-        if (classIndexIndex != -1)
+        if (classIndexIndex.IsNonNull)
             sb.Append("<").Append(string.Join(", ", GenericClassParams.AsEnumerable())).Append(">");
 
         sb.Append(".").Append(MethodDefinition?.Name);
 
-        if (methodIndexIndex != -1)
+        if (methodIndexIndex.IsNonNull)
             sb.Append("<").Append(string.Join(", ", GenericMethodParams.AsEnumerable())).Append(">");
 
         return sb.ToString();
@@ -43,8 +57,17 @@ public class Il2CppMethodSpec : ReadableClass
 
     public override void Read(ClassReadingBinaryReader reader)
     {
-        methodDefinitionIndex = reader.ReadInt32();
-        classIndexIndex = reader.ReadInt32();
-        methodIndexIndex = reader.ReadInt32();
+        if (IsAtLeast(108))
+        {
+            //in metadata now, so dynamic widths apply
+            methodDefinitionIndex = Il2CppVariableWidthIndex<Il2CppMethodDefinition>.Read(reader);
+            classIndexIndex = Il2CppVariableWidthIndex<Il2CppGenericInst>.Read(reader);
+            methodIndexIndex = Il2CppVariableWidthIndex<Il2CppGenericInst>.Read(reader);
+            return;
+        }
+
+        methodDefinitionIndex = Il2CppVariableWidthIndex<Il2CppMethodDefinition>.MakeTemporaryForFixedWidthUsage(reader.ReadInt32());
+        classIndexIndex = Il2CppVariableWidthIndex<Il2CppGenericInst>.MakeTemporaryForFixedWidthUsage(reader.ReadInt32());
+        methodIndexIndex = Il2CppVariableWidthIndex<Il2CppGenericInst>.MakeTemporaryForFixedWidthUsage(reader.ReadInt32());
     }
 };

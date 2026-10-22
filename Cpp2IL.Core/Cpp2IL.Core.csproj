@@ -2,12 +2,12 @@
     <PropertyGroup>
         <Authors>Sam Byass (Samboy063)</Authors>
         <Company>N/A</Company>
-        <Copyright>Copyright © Samboy063 2019-2023</Copyright>
+        <Copyright>Copyright © Samboy063 2019-2026</Copyright>
         <DebugType>embedded</DebugType>
         <Description>Reverses Unity's IL2CPP Build Process</Description>
         <EmbedUntrackedSources>true</EmbedUntrackedSources>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-        <LangVersion>13</LangVersion>
+        <LangVersion>14</LangVersion>
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <PackageId>Samboy063.Cpp2IL.Core</PackageId>
@@ -16,7 +16,7 @@
         <PublishRepositoryUrl>true</PublishRepositoryUrl>
         <RepositoryType>git</RepositoryType>
         <RepositoryUrl>https://github.com/SamboyCoding/Cpp2IL.git</RepositoryUrl>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFrameworks>net10.0;net9.0;net8.0;netstandard2.0</TargetFrameworks>
         <Title>Cpp2IL.Core</Title>
         <VersionPrefix>2022.1.0</VersionPrefix>
 
@@ -40,33 +40,33 @@
 
     <ItemGroup>
         <!--Needed for DLL output-->
-        <PackageReference Include="AsmResolver.DotNet" Version="6.0.0-beta.4" />
-        <PackageReference Include="AssetRipper.CIL" Version="1.2.0" />
+        <PackageReference Include="AsmResolver.DotNet" Version="6.0.1" />
+        <PackageReference Include="AssetRipper.CIL" Version="1.3.2" />
         
+        <!--UREngine pins its Disarm fork in the parent repository.-->
+        <ProjectReference Include="..\..\Disarm\Disarm\Disarm.csproj" />
 
         <!--For X86/X64 disassembly-->
         <PackageReference Include="Iced" Version="1.21.0" />
         
-        <!--For ARM64 and ARMv7 disassembly. Future: Remove once disarm is stable and move ARMv7 to CapstoneSharp by 6pak-->
+        <!--For ARMv7 disassembly only. Future: replace with a disarm equivalent-->
         <PackageReference Include="AssetRipper.Gee.External.Capstone" Version="2.3.2" />
         
         <!--Not used at runtime, but needed for the build-->
-        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.401" PrivateAssets="All" />
 
-        <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" IncludeAssets="runtime; build; native; contentfiles; analyzers; buildtransitive" />
-    </ItemGroup>
-
-    <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
-        <!--Supplementary packages to provide modern runtime features on netstandard2-->
-        <PackageReference Include="System.ValueTuple" Version="4.5.0" />
+        <PackageReference Include="PolySharp" Version="1.16.0" PrivateAssets="all" IncludeAssets="runtime; build; native; contentfiles; analyzers; buildtransitive" />
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\Disarm\Disarm\Disarm.csproj" />
         <ProjectReference Include="..\LibCpp2IL\LibCpp2IL.csproj" />
         
         <!--Future: Consider moving to its own project and moving the impl in cpp2il to a plugin-->
         <ProjectReference Include="..\StableNameDotNet\StableNameDotNet.csproj" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+      <PackageReference Include="System.ValueTuple" Version="4.6.2" />
     </ItemGroup>
 
 </Project>

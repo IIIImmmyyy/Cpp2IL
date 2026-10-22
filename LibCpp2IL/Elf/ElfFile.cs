@@ -9,7 +9,7 @@ using LibCpp2IL.PE;
 
 namespace LibCpp2IL.Elf;
 
-public sealed class ElfFile : Il2CppBinary
+public sealed class ElfFile : ElfStyleRelocationsBinary
 {
     private byte[] _raw;
     private List<IElfProgramHeaderEntry> _elfProgramHeaderEntries;
@@ -21,8 +21,6 @@ public sealed class ElfFile : Il2CppBinary
     private readonly Dictionary<string, ElfSymbolTableEntry> _exportNameTable = new();
     private readonly Dictionary<ulong, ElfSymbolTableEntry> _exportAddressTable = new();
     private List<long>? _initializerPointers;
-
-    private readonly List<(ulong start, ulong end)> relocationBlocks = [];
 
     private long _globalOffset;
 
@@ -102,7 +100,9 @@ public sealed class ElfFile : Il2CppBinary
             // NOTE: Do not use .RawAddress here, as it is not guaranteed to point to the actual dynamic table being used.
             // The dynamic table should be mapped by one of the preceding PT_LOAD entries.
             // Source: phdr_table_get_dynamic_section, https://cs.android.com/android/platform/superproject/main/+/main:bionic/linker/linker_phdr.cpp
-            _dynamicSection = ReadReadableArrayAtVirtualAddress<ElfDynamicEntry>(dynamicSegment.VirtualAddress, (int)dynamicSegment.RawSize / (is32Bit ? 8 : 16)).ToList();
+            _dynamicSection = ReadReadableArrayAtVirtualAddress<ElfDynamicEntry>(dynamicSegment.VirtualAddress, (int)dynamicSegment.RawSize / (is32Bit ? 8 : 16))
+                .TakeWhile(x => x.Tag != ElfDynamicType.DT_NULL)
+                .ToList();
         }
 
         LibLogger.VerboseNewline("\tFinding Relocations...");
@@ -115,9 +115,19 @@ public sealed class ElfFile : Il2CppBinary
         LibLogger.VerboseNewline("\tProcessing Symbols...");
         start = DateTime.Now;
 
-        ProcessSymbols();
+        try
+        {
+            ProcessSymbols();
 
-        LibLogger.VerboseNewline($"\tOK ({(DateTime.Now - start).TotalMilliseconds} ms)");
+            LibLogger.VerboseNewline($"\tOK ({(DateTime.Now - start).TotalMilliseconds} ms)");
+        }
+        catch (Exception e)
+        {
+            LibLogger.ErrorNewline($"\tCaught {e.GetType().Name} processing symbols! Attempting to continue without symbol information (no exports, for example)...");
+#if DEBUG
+            LibLogger.ErrorNewline(e.ToString());
+#endif
+        }
 
         LibLogger.Verbose("\tProcessing Initializers...");
         start = DateTime.Now;
@@ -185,189 +195,11 @@ public sealed class ElfFile : Il2CppBinary
     {
         try
         {
-            var rels = new HashSet<ElfRelocation>();
-
-            var relSectionStarts = new HashSet<ulong>();
-
-            //REL tables
-            foreach (var section in GetSections(ElfSectionEntryType.SHT_REL))
-            {
-                //Get related section pointer
-                var relatedTablePointer = _elfSectionHeaderEntries[section.LinkedSectionIndex].RawAddress;
-
-                //Read rel table
-                var table = ReadReadableArrayAtRawAddr<ElfRelEntry>((long)section.RawAddress, (long)(section.Size / (ulong)section.EntrySize));
-
-                LibLogger.VerboseNewline($"\t\t-Got {table.Length} from REL section {section.Name}");
-
-                relocationBlocks.Add((section.RawAddress, section.RawAddress + section.Size));
-                relSectionStarts.Add(section.RawAddress);
-
-                //Insert into rels list.
-                rels.UnionWith(table.Select(r => new ElfRelocation(this, r, relatedTablePointer)));
-            }
-
-            //RELA tables
-            foreach (var section in GetSections(ElfSectionEntryType.SHT_RELA))
-            {
-                if (relSectionStarts.Contains(section.RawAddress))
-                {
-                    LibLogger.VerboseNewline($"\t\t-Ignoring RELA section starting at 0x{section.RawAddress} because it's already been processed.");
-                    continue;
-                }
-
-                //Get related section pointer
-                var relatedTablePointer = _elfSectionHeaderEntries[section.LinkedSectionIndex].RawAddress;
-
-                //Read rela table
-                var table = ReadReadableArrayAtRawAddr<ElfRelaEntry>((long)section.RawAddress, (long)(section.Size / (ulong)section.EntrySize));
-
-                LibLogger.VerboseNewline($"\t\t-Got {table.Length} from RELA section {section.Name} at 0x{section.RawAddress}");
-
-                relocationBlocks.Add((section.RawAddress, section.RawAddress + section.Size));
-                relSectionStarts.Add(section.RawAddress);
-
-                //Insert into rels list.
-                rels.UnionWith(table.Select(r => new ElfRelocation(this, r, relatedTablePointer)));
-            }
-
-            //Dynamic Rel Table
-            if (GetDynamicEntryOfType(ElfDynamicType.DT_REL) is { } dt_rel && (uint)MapVirtualAddressToRaw(dt_rel.Value) is { } dtRelStartAddr)
-            {
-                if (!relSectionStarts.Contains(dtRelStartAddr))
-                {
-                    //Null-assertion reason: We must have both a RELSZ and a RELENT or this is an error.
-                    var relocationSectionSize = GetDynamicEntryOfType(ElfDynamicType.DT_RELSZ)!.Value;
-                    var relCount = (int)(relocationSectionSize / GetDynamicEntryOfType(ElfDynamicType.DT_RELENT)!.Value);
-                    var entries = ReadReadableArrayAtRawAddr<ElfRelEntry>(dtRelStartAddr, relCount);
-
-                    LibLogger.VerboseNewline($"\t\t-Got {entries.Length} from dynamic REL section at 0x{dtRelStartAddr}");
-
-                    //Null-assertion reason: We must have a DT_SYMTAB if we have a DT_REL
-                    var pSymTab = GetDynamicEntryOfType(ElfDynamicType.DT_SYMTAB)!.Value;
-
-                    relocationBlocks.Add((dtRelStartAddr, dtRelStartAddr + relocationSectionSize));
-
-                    rels.UnionWith(entries.Select(r => new ElfRelocation(this, r, pSymTab)));
-                }
-                else
-                {
-                    LibLogger.VerboseNewline($"\t\t-Ignoring dynamic REL section starting at 0x{dtRelStartAddr} because it's already been processed.");
-                }
-            }
-
-            //Dynamic Rela Table
-            if (GetDynamicEntryOfType(ElfDynamicType.DT_RELA) is { } dt_rela)
-            {
-                //Null-assertion reason: We must have both a RELSZ and a RELENT or this is an error.
-                var relocationSectionSize = GetDynamicEntryOfType(ElfDynamicType.DT_RELASZ)!.Value;
-                var relCount = (int)(relocationSectionSize / GetDynamicEntryOfType(ElfDynamicType.DT_RELAENT)!.Value);
-                var startAddr = (uint)MapVirtualAddressToRaw(dt_rela.Value);
-
-                if (!relSectionStarts.Contains(startAddr))
-                {
-                    var entries = ReadReadableArrayAtRawAddr<ElfRelaEntry>(startAddr, relCount);
-
-                    LibLogger.VerboseNewline($"\t\t-Got {entries.Length} from dynamic RELA section at 0x{startAddr}");
-
-                    //Null-assertion reason: We must have a DT_SYMTAB if we have a DT_RELA
-                    var pSymTab = GetDynamicEntryOfType(ElfDynamicType.DT_SYMTAB)!.Value;
-
-                    relocationBlocks.Add((startAddr, startAddr + relocationSectionSize));
-
-                    rels.UnionWith(entries.Select(r => new ElfRelocation(this, r, pSymTab)));
-                }
-                else
-                {
-                    LibLogger.VerboseNewline($"\t\t-Ignoring dynamic RELA section starting at 0x{startAddr} because it's already been processed.");
-                }
-            }
-
-            var sizeOfRelocationStruct = (ulong)(is32Bit ? ElfDynamicSymbol32.StructSize : ElfDynamicSymbol64.StructSize);
-
-            LibLogger.Verbose($"\t-Now Processing {rels.Count} relocations...");
-
-            foreach (var rel in rels)
-            {
-                var pointer = rel.pRelatedSymbolTable + rel.IndexInSymbolTable * sizeOfRelocationStruct;
-                ulong symValue;
-                try
-                {
-                    symValue = ((IElfDynamicSymbol)(is32Bit ? ReadReadable<ElfDynamicSymbol32>((long)pointer) : ReadReadable<ElfDynamicSymbol64>((long)pointer))).Value;
-                }
-                catch
-                {
-                    LibLogger.ErrorNewline($"Exception reading dynamic symbol for rel of type {rel.Type} at pointer 0x{pointer:X} (length of file is 0x{RawLength:X}, pointer - length is 0x{pointer - (ulong)RawLength:X})");
-                    throw;
-                }
-
-                long targetLocation;
-                try
-                {
-                    targetLocation = MapVirtualAddressToRaw(rel.Offset);
-                }
-                catch (InvalidOperationException)
-                {
-                    continue; //Ignore this rel.
-                }
-
-                //Read one word.
-                ulong addend;
-                if (rel.Addend.HasValue)
-                    addend = rel.Addend.Value;
-                else
-                {
-                    Position = targetLocation;
-                    addend = ReadUInt64();
-                }
-
-                //Adapted from Il2CppInspector. Thanks to djKaty.
-
-                ulong newValue;
-                bool recognized;
-                if (InstructionSetId == DefaultInstructionSets.ARM_V7)
-                    (newValue, recognized) = rel.Type switch
-                    {
-                        ElfRelocationType.R_ARM_ABS32 => (symValue + addend, true), // S + A
-                        ElfRelocationType.R_ARM_REL32 => (symValue + rel.Offset - addend, true), // S - P + A
-                        ElfRelocationType.R_ARM_COPY => (symValue, true), // S
-                        _ => (0UL, false)
-                    };
-                else if (InstructionSetId == DefaultInstructionSets.ARM_V8)
-                    (newValue, recognized) = rel.Type switch
-                    {
-                        ElfRelocationType.R_AARCH64_ABS64 => (symValue + addend, true), // S + A
-                        ElfRelocationType.R_AARCH64_PREL64 => (symValue + addend - rel.Offset, true), // S + A - P
-                        ElfRelocationType.R_AARCH64_GLOB_DAT => (symValue + addend, true), // S + A
-                        ElfRelocationType.R_AARCH64_JUMP_SLOT => (symValue + addend, true), // S + A
-                        ElfRelocationType.R_AARCH64_RELATIVE => (symValue + addend, true), // Delta(S) + A
-                        _ => (0UL, false)
-                    };
-                else if (InstructionSetId == DefaultInstructionSets.X86_32)
-                    (newValue, recognized) = rel.Type switch
-                    {
-                        ElfRelocationType.R_386_32 => (symValue + addend, true), // S + A
-                        ElfRelocationType.R_386_PC32 => (symValue + addend - rel.Offset, true), // S + A - P
-                        ElfRelocationType.R_386_GLOB_DAT => (symValue, true), // S
-                        ElfRelocationType.R_386_JMP_SLOT => (symValue, true), // S
-                        _ => (0UL, false)
-                    };
-                else if (InstructionSetId == DefaultInstructionSets.X86_64)
-                    (newValue, recognized) = rel.Type switch
-                    {
-                        ElfRelocationType.R_AMD64_64 => (symValue + addend, true), // S + A
-                        ElfRelocationType.R_AMD64_RELATIVE => (addend, true), //Base address + A
-
-                        _ => (0UL, false)
-                    };
-                else
-                    (newValue, recognized) = (0UL, false);
-
-                if (recognized)
-                {
-                    WriteWord((int)targetLocation, newValue);
-                }
-            }
+            ApplyRelocations(_dynamicSection
+                    .Where(x => x.Tag != ElfDynamicType.DT_NEEDED)
+                    .ToDictionary(x => x.Tag, x => x.Value), 
+                (ulong)0,
+                (ElfMachine)_elfHeader!.Machine);
         }
         catch
         {
@@ -403,7 +235,12 @@ public sealed class ElfFile : Il2CppBinary
         {
             if (GetDynamicEntryOfType(ElfDynamicType.DT_SYMTAB) is { } dynamicSymTab)
             {
-                var end = _dynamicSection.Where(x => x.Value > dynamicSymTab.Value).OrderBy(x => x.Value).First().Value;
+                var endSection = _dynamicSection.Where(x => x.Value > dynamicSymTab.Value).OrderBy(x => x.Value).FirstOrDefault();
+                ulong end;
+                if(endSection != null)
+                    end = endSection.Value;
+                else
+                    end = GetProgramHeaderOfType(ElfProgramEntryType.PT_DYNAMIC) is {} dynamicSegment ? dynamicSegment.VirtualAddress + dynamicSegment.RawSize : (ulong)RawLength;
                 var dynSymSize = is32Bit ? 18ul : 24ul;
 
                 var address = (ulong)MapVirtualAddressToRaw(dynamicSymTab.Value);
@@ -677,17 +514,17 @@ public sealed class ElfFile : Il2CppBinary
     private (ulong codeReg, ulong metaReg) FindCodeAndMetadataRegDefaultBehavior(Il2CppMetadata metadata)
     {
         var methodCount = metadata.methodDefs.Count(x => x.methodIndex >= 0);
-        var typeDefinitionsCount = metadata.typeDefs.Length;
+        var typeDefinitionsCount = metadata.TypeDefinitionCount;
         
         LibLogger.VerboseNewline("Searching for il2cpp structures in an ELF binary using non-arch-specific method...");
-        var searcher = new BinarySearcher(this, methodCount, typeDefinitionsCount);
+        var searcher = new BinarySearcher(this, metadata, methodCount, typeDefinitionsCount);
 
         LibLogger.VerboseNewline("\tLooking for code reg (this might take a while)...");
-        var codeReg = metadata.MetadataVersion >= 24.2f ? searcher.FindCodeRegistrationPost2019(metadata) : searcher.FindCodeRegistrationPre2019();
+        var codeReg = metadata.MetadataVersion >= 24.2f ? searcher.FindCodeRegistrationPost2019() : searcher.FindCodeRegistrationPre2019();
         LibLogger.VerboseNewline($"\tGot code reg 0x{codeReg:X}");
 
         LibLogger.VerboseNewline($"\tLooking for meta reg ({(metadata.MetadataVersion >= 27f ? "post-27" : "pre-27")})...");
-        var metaReg = metadata.MetadataVersion >= 27f ? searcher.FindMetadataRegistrationPost24_5(metadata) : searcher.FindMetadataRegistrationPre24_5();
+        var metaReg = metadata.MetadataVersion >= 27f ? searcher.FindMetadataRegistrationPost24_5() : searcher.FindMetadataRegistrationPre24_5();
         LibLogger.VerboseNewline($"\tGot meta reg 0x{metaReg:x}");
 
         return (codeReg, metaReg);
@@ -708,19 +545,27 @@ public sealed class ElfFile : Il2CppBinary
         if (addr >= section.VirtualAddress + section.RawSize)
             if (throwOnError)
                 throw new InvalidOperationException(
-                    $"Virtual address {section.VirtualAddress:X} is located outside of the file-backed portion of Elf PHT section at 0x{section.VirtualAddress:X}");
+                    $"Virtual address {addr:X} is located outside of the file-backed portion of Elf PHT section at 0x{section.VirtualAddress:X}");
             else
                 return VirtToRawInvalidOutOfBounds;
 
         return (long)(addr - (section.VirtualAddress - section.RawAddress));
     }
 
-    public override ulong MapRawAddressToVirtual(uint offset)
+    public override ulong MapRawAddressToVirtual(uint offset, bool throwOnError = true)
     {
         if (relocationBlocks.Any(b => b.start <= offset && b.end > offset))
-            throw new InvalidOperationException("Attempt to map a relocation block to a virtual address");
+            if (throwOnError)
+                throw new InvalidOperationException("Attempt to map a relocation block to a virtual address");
+            else
+                return 0;
 
-        var section = _elfProgramHeaderEntries.First(x => offset >= x.RawAddress && offset < x.RawAddress + x.RawSize);
+        var section = _elfProgramHeaderEntries.FirstOrDefault(x => offset >= x.RawAddress && offset < x.RawAddress + x.RawSize);
+        if (section == null)
+            if (throwOnError)
+                throw new InvalidOperationException($"No entry in the Elf PHT contains raw address 0x{offset:X}");
+            else
+                return 0;
 
         return section.VirtualAddress + offset - section.RawAddress;
     }
@@ -729,7 +574,7 @@ public sealed class ElfFile : Il2CppBinary
 
     public override ulong GetRva(ulong pointer) => (ulong)((long)pointer - _globalOffset);
 
-    public override byte[] GetRawBinaryContent() => _raw;
+    public override ReadOnlySpan<byte> GetRawBinaryContent() => _raw;
 
     public override ulong GetVirtualAddressOfExportedFunctionByName(string toFind)
     {
@@ -761,13 +606,13 @@ public sealed class ElfFile : Il2CppBinary
 
     public override ulong GetVirtualAddressOfPrimaryExecutableSection() => _elfSectionHeaderEntries.FirstOrDefault(s => s.Name == ".text")?.VirtualAddress ?? 0;
 
-    public override byte[] GetEntirePrimaryExecutableSection()
+    public override ReadOnlySpan<byte> GetEntirePrimaryExecutableSection()
     {
         var primarySection = _elfSectionHeaderEntries.FirstOrDefault(s => s.Name == ".text");
 
         if (primarySection == null)
-            return [];
+            return ReadOnlySpan<byte>.Empty;
 
-        return GetRawBinaryContent().SubArray((int)primarySection.RawAddress, (int)primarySection.Size);
+        return GetRawBinaryContent().Slice((int)primarySection.RawAddress, (int)primarySection.Size);
     }
 }

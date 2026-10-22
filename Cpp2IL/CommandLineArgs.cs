@@ -1,4 +1,3 @@
-﻿using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
@@ -43,9 +42,8 @@ public class CommandLineArgs
     [Option("list-output-formats", HelpText = "List the available output formats and exit.")]
     public bool ListOutputFormats { get; set; }
 
-    //FUTURE: Allow multiple of these?
     [Option("output-as", HelpText = "Specify the ID of the output format you wish to use.")]
-    public string? OutputFormatId { get; set; }
+    public IEnumerable<string> OutputFormatIds { get; set; } = new List<string>();
 
     [Option("output-to", HelpText = "Root directory to output to. Defaults to cpp2il_out in the current working directory.")]
     public string OutputRootDir { get; set; } = Path.GetFullPath("cpp2il_out");

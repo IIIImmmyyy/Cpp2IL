@@ -1,3 +1,4 @@
+using System;
 using LibCpp2IL.BinaryStructures;
 
 namespace Cpp2IL.Core.Model.Contexts;
@@ -7,23 +8,28 @@ namespace Cpp2IL.Core.Model.Contexts;
 /// For example, pointers, byref types, arrays.
 /// </summary>
 public abstract class WrappedTypeAnalysisContext(
-    TypeAnalysisContext elementType,
-    AssemblyAnalysisContext referencedFrom) : ReferencedTypeAnalysisContext(referencedFrom)
+    TypeAnalysisContext elementType) : ReferencedTypeAnalysisContext(elementType.DeclaringAssembly)
 {
     public virtual TypeAnalysisContext ElementType { get; } = elementType;
 
-    public override string DefaultNamespace => ElementType.Namespace;
+    public sealed override string DefaultNamespace => ElementType.DefaultNamespace;
 
-    public static WrappedTypeAnalysisContext Create(Il2CppType rawType, AssemblyAnalysisContext referencedFrom)
+    public sealed override string? OverrideNamespace
+    {
+        get => ElementType.OverrideNamespace;
+        set => ElementType.OverrideNamespace = value;
+    }
+
+    public static WrappedTypeAnalysisContext Create(Il2CppType rawType, ApplicationAnalysisContext context)
     {
         return rawType.Type switch
         {
-            Il2CppTypeEnum.IL2CPP_TYPE_PTR => new PointerTypeAnalysisContext(rawType, referencedFrom),
-            Il2CppTypeEnum.IL2CPP_TYPE_BYREF => new ByRefTypeAnalysisContext(rawType, referencedFrom),
-            Il2CppTypeEnum.IL2CPP_TYPE_ARRAY => new ArrayTypeAnalysisContext(rawType, referencedFrom),
-            Il2CppTypeEnum.IL2CPP_TYPE_SZARRAY => new SzArrayTypeAnalysisContext(rawType, referencedFrom),
-            Il2CppTypeEnum.IL2CPP_TYPE_BOXED => new BoxedTypeAnalysisContext(rawType, referencedFrom),
-            Il2CppTypeEnum.IL2CPP_TYPE_PINNED => new PinnedTypeAnalysisContext(rawType, referencedFrom),
+            Il2CppTypeEnum.IL2CPP_TYPE_PTR => new PointerTypeAnalysisContext(rawType, context),
+            Il2CppTypeEnum.IL2CPP_TYPE_BYREF => throw new NotSupportedException("ByRef types have a dedicated flag"),
+            Il2CppTypeEnum.IL2CPP_TYPE_ARRAY => new ArrayTypeAnalysisContext(rawType, context),
+            Il2CppTypeEnum.IL2CPP_TYPE_SZARRAY => new SzArrayTypeAnalysisContext(rawType, context),
+            Il2CppTypeEnum.IL2CPP_TYPE_BOXED => new BoxedTypeAnalysisContext(rawType, context),
+            Il2CppTypeEnum.IL2CPP_TYPE_PINNED => new PinnedTypeAnalysisContext(rawType, context),
             _ => throw new($"Type {rawType.Type} is not a wrapper type")
         };
     }

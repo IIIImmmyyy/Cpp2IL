@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Cpp2IL.Core.Api;
+using Cpp2IL.Core.Extensions;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
 
@@ -63,14 +64,14 @@ public class NativeMethodDetectionProcessingLayer : Cpp2IlProcessingLayer
 
         foreach (var instruction in convertedIsil)
         {
-            if (instruction.OpCode == InstructionSetIndependentOpCode.Call)
+            if (instruction.OpCode == OpCode.Call)
             {
                 if (TryGetAddressFromInstruction(instruction, out var address) && !appContext.MethodsByAddress.ContainsKey(address))
                 {
                     nativeMethodInfoStack.Push((address, true));
                 }
             }
-            else if (instruction.OpCode == InstructionSetIndependentOpCode.CallNoReturn)
+            else if (instruction.OpCode == OpCode.CallVoid)
             {
                 if (TryGetAddressFromInstruction(instruction, out var address) && !appContext.MethodsByAddress.ContainsKey(address))
                 {
@@ -80,11 +81,11 @@ public class NativeMethodDetectionProcessingLayer : Cpp2IlProcessingLayer
         }
     }
 
-    private static bool TryGetAddressFromInstruction(InstructionSetIndependentInstruction instruction, out ulong address)
+    private static bool TryGetAddressFromInstruction(Instruction instruction, out ulong address)
     {
-        if (instruction.Operands.Length > 0 && instruction.Operands[0].Data is IsilImmediateOperand operand && operand.Value is not string)
+        if (instruction.Operands.Count > 0 && instruction.Operands[0] is Immediate immediate)
         {
-            address = operand.Value.ToUInt64(null);
+            address = immediate.UnsignedValue;
             return true;
         }
 
