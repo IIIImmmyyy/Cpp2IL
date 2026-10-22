@@ -275,23 +275,21 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
         }
 
         ConvertedIsil = AppContext.InstructionSet.GetIsilFromMethod(this);
-        
-        // use my better way to build cfg
-        
-        // if (ConvertedIsil.Count == 0)
-        //     return; //Nothing to do, empty function
-        //
-        // ControlFlowGraph = new ISILControlFlowGraph();
-        // ControlFlowGraph.Build(ConvertedIsil);
-        //
-        // // Post step to convert metadata usage. Ldstr Opcodes etc.
-        // foreach (var block in ControlFlowGraph.Blocks)
-        // {
-        //     foreach (var converter in blockProcessors)
-        //     {
-        //         converter.Process(this, block);
-        //     }
-        // }
+
+        if (ConvertedIsil.Count == 0)
+            return; //Nothing to do, empty function
+
+        ControlFlowGraph = new ISILControlFlowGraph();
+        ControlFlowGraph.Build(ConvertedIsil);
+
+        // Post step to convert metadata usage. Ldstr Opcodes etc.
+        foreach (var block in ControlFlowGraph.Blocks)
+        {
+            foreach (var converter in blockProcessors)
+            {
+                converter.Process(this, block);
+            }
+        }
     }
 
     public void ReleaseAnalysisData()

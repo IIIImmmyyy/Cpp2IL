@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using Disarm;
 using Cpp2IL.Core.Logging;
-using Cpp2IL.Core.Model.Contexts;
 using Cpp2IL.Core.Utils;
+using Iced.Intel;
 using LibCpp2IL;
 using LibCpp2IL.Reflection;
 
@@ -12,54 +12,33 @@ namespace Cpp2IL.Core.Il2CppApiFunctions;
 
 public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
 {
-    private Arm64BranchXrefIndex? _branchIndex;
+    private List<Arm64Instruction>? _cachedDisassembledBytes;
 
-    public override void Find(ApplicationAnalysisContext applicationAnalysisContext)
+    private List<Arm64Instruction> DisassembleTextSection()
     {
-        try
+        if (_cachedDisassembledBytes == null)
         {
-            base.Find(applicationAnalysisContext);
-        }
-        finally
-        {
-            ClearBranchIndex();
-        }
-    }
-
-    private void ClearBranchIndex()
-    {
-        _branchIndex = null;
-    }
-
-    private Arm64BranchXrefIndex GetBranchIndex()
-    {
-        if (_branchIndex == null)
-        {
-            var binary = LibCpp2IlMain.Binary!;
-            var executableSection = binary.GetEntirePrimaryExecutableSection();
-            _branchIndex = Arm64BranchXrefIndex.Build(
-                executableSection,
-                binary.GetVirtualAddressOfPrimaryExecutableSection(),
-                binary.IsBigEndian);
+            var toDisasm = LibCpp2IlMain.Binary!.GetEntirePrimaryExecutableSection();
+            _cachedDisassembledBytes = Disassembler.Disassemble(toDisasm, LibCpp2IlMain.Binary.GetVirtualAddressOfPrimaryExecutableSection(), new(true, true, false)).ToList();
         }
 
-        return _branchIndex;
+        return _cachedDisassembledBytes;
     }
 
     protected override IEnumerable<ulong> FindAllThunkFunctions(ulong addr, uint maxBytesBack = 0, params ulong[] addressesToIgnore)
     {
-        // Key-function thunk discovery 保留原有 B/BL/B.cond 查询语义，
-        // 但复用公共轻量索引，避免持有完整 .text 反汇编结果。
-        var matchingJmps = GetBranchIndex().GetSourcesTo(
-            addr,
-            Arm64BranchXrefKind.AllImmediate);
+        //Disassemble .text
+        var disassembly = DisassembleTextSection();
 
-        foreach (var matchingJmpAddress in matchingJmps)
+        //Find all jumps to the target address
+        var matchingJmps = disassembly.Where(i => i.Mnemonic is Arm64Mnemonic.B or Arm64Mnemonic.BL && i.BranchTarget == addr).ToList();
+
+        foreach (var matchingJmp in matchingJmps)
         {
-            if (addressesToIgnore.Contains(matchingJmpAddress)) continue;
+            if (addressesToIgnore.Contains(matchingJmp.Address)) continue;
 
             //Find this instruction in the raw file
-            var offsetInPe = (ulong)LibCpp2IlMain.Binary!.MapVirtualAddressToRaw(matchingJmpAddress);
+            var offsetInPe = (ulong)LibCpp2IlMain.Binary!.MapVirtualAddressToRaw(matchingJmp.Address);
             if (offsetInPe == 0 || offsetInPe == (ulong)(LibCpp2IlMain.Binary.RawLength - 1))
                 continue;
 
@@ -70,7 +49,7 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
             //Double-cc = thunk
             if (previousByte == 0xCC && nextByte == 0xCC)
             {
-                yield return matchingJmpAddress;
+                yield return matchingJmp.Address;
                 continue;
             }
 
@@ -78,13 +57,13 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
             {
                 for (ulong backtrack = 1; backtrack < maxBytesBack && offsetInPe - backtrack > 0; backtrack++)
                 {
-                    if (addressesToIgnore.Contains(matchingJmpAddress - (backtrack - 1)))
+                    if (addressesToIgnore.Contains(matchingJmp.Address - (backtrack - 1)))
                         //Move to next jmp
                         break;
 
                     if (LibCpp2IlMain.Binary.GetByteAtRawAddress(offsetInPe - backtrack) == 0xCC)
                     {
-                        yield return matchingJmpAddress - (backtrack - 1);
+                        yield return matchingJmp.Address - (backtrack - 1);
                         break;
                     }
                 }
@@ -147,8 +126,10 @@ public class NewArm64KeyFunctionAddresses : BaseKeyFunctionAddresses
 
     protected override int GetCallerCount(ulong toWhere)
     {
-        return GetBranchIndex().CountReferencesTo(
-            toWhere,
-            Arm64BranchXrefKind.AllImmediate);
+        //Disassemble .text
+        var disassembly = DisassembleTextSection();
+
+        //Find all jumps to the target address
+        return disassembly.Count(i => i.Mnemonic is Arm64Mnemonic.B or Arm64Mnemonic.BL && i.BranchTarget == toWhere);
     }
 }

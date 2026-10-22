@@ -1,9 +1,5 @@
 using System;
-using System.Collections.Generic;
 using Cpp2IL.Core.Model.Contexts;
-using Disarm;
-using LibCpp2IL;
-using LibCpp2IL.BinaryStructures;
 
 namespace Cpp2IL.Core.ISIL;
 
@@ -20,37 +16,8 @@ public readonly struct InstructionSetIndependentOperand
     public static InstructionSetIndependentOperand MakeVectorElement(string registerName, IsilVectorRegisterElementOperand.VectorElementWidth width, int index) => new(OperandType.Register, new IsilVectorRegisterElementOperand(registerName, width, index));
     public static InstructionSetIndependentOperand MakeTypeMetadataUsage(TypeAnalysisContext value) => new(OperandType.TypeMetadataUsage, new IsilTypeMetadataUsageOperand(value));
     public static InstructionSetIndependentOperand MakeMethodReference(MethodAnalysisContext value) => new(OperandType.MethodReference, new IsilMethodOperand(value));
-    public static InstructionSetIndependentOperand MakeSystemRegister(IsilSystemRegister register) =>
-        new(OperandType.SystemRegister, new IsilSystemRegisterOperand(register));
-    
-    
-    //==== ext================================
 
-    public static InstructionSetIndependentOperand MakeStackFrame(int frameSize,ulong address,List<InstructionSetIndependentInstruction> instructions)
-        => new(OperandType.StackOffset, IsilPrologueStackFrame.Create(frameSize,address,instructions));
-    public static InstructionSetIndependentOperand MakeEpilogueStackFrame(int frameSize,ulong address,List<InstructionSetIndependentInstruction> instructions)
-        => new(OperandType.StackOffset, IsilEpilogueStackFrame.Create(frameSize, address,instructions));
-    public static InstructionSetIndependentOperand MakeVectorArrangementRegister(string reg,
-        Arm64ArrangementSpecifier arrangement)=> new(OperandType.Register, new IsilVectorRegisterArrangement(reg,arrangement));
-    
-    public static InstructionSetIndependentOperand MakeCastType(Il2CppTypeEnum castType,bool isSmart=false,bool force=false)
-        => new(OperandType.CastType, new IsilCastOperand(castType, isSmart,force));
-    
-    public static InstructionSetIndependentOperand MakeSimdMathType(IsilMnemonic isilMnemonic)
-        => new(OperandType.SimdMathType, new IsilSimdMathType(isilMnemonic));
 
-    public static InstructionSetIndependentOperand MakeFloatToIntegerConversion(
-        IsilFloatToIntegerRoundingMode roundingMode,
-        IsilIntegerSignedness signedness,
-        int targetBitWidth)
-        => new(OperandType.FloatToIntegerConversion,
-            new IsilFloatToIntegerConversion(roundingMode, signedness, targetBitWidth));
-
-    public static InstructionSetIndependentOperand MakeIntegerToFloatConversion(
-        IsilIntegerSignedness signedness,
-        int sourceBitWidth)
-        => new(OperandType.IntegerToFloatConversion,
-            new IsilIntegerToFloatConversion(signedness, sourceBitWidth));
     private InstructionSetIndependentOperand(OperandType type, IsilOperandData data)
     {
         Type = type;
@@ -75,13 +42,11 @@ public readonly struct InstructionSetIndependentOperand
         Instruction = 16,
         TypeMetadataUsage = 32,
         MethodReference = 64,
-        CastType = 128,
-        SimdMathType = 256,
-        FloatToIntegerConversion = 512,
-        SystemRegister = 1024,
-        IntegerToFloatConversion = 2048,
+
         MemoryOrStack = Memory | StackOffset,
-        NotStack = Immediate | Register | Memory | Instruction | TypeMetadataUsage | MethodReference | CastType | SimdMathType | FloatToIntegerConversion | SystemRegister | IntegerToFloatConversion,
-        Any = Immediate | StackOffset | Register | Memory | TypeMetadataUsage | MethodReference | CastType | Instruction | SimdMathType | FloatToIntegerConversion | SystemRegister | IntegerToFloatConversion
+        NotStack = Immediate | Register | Memory | Instruction | TypeMetadataUsage | MethodReference,
+
+
+        Any = Immediate | StackOffset | Register | Memory | TypeMetadataUsage | MethodReference
     }
 }

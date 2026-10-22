@@ -48,13 +48,6 @@ public readonly struct IsilMemoryOperand : IsilOperandData
         Base = @base;
         Addend = addend;
     }
-    public IsilMemoryOperand(InstructionSetIndependentOperand @base, InstructionSetIndependentOperand index)
-    {
-        Debug.Assert(@base.Type == InstructionSetIndependentOperand.OperandType.Register);
-        Debug.Assert(index.Type == InstructionSetIndependentOperand.OperandType.Register);
-        Base = @base;
-        Index = index;
-    }
 
     /// <summary>
     /// Create a new memory operand representing a base plus an index multiplied by a constant scale.

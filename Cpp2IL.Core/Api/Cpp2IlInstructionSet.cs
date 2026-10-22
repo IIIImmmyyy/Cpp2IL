@@ -35,6 +35,11 @@ public abstract class Cpp2IlInstructionSet
     public abstract List<InstructionSetIndependentInstruction> GetIsilFromMethod(MethodAnalysisContext context);
 
     /// <summary>
+    /// Analyze a pre-v29 attribute generator using this frontend's analysis pipeline.
+    /// </summary>
+    public virtual void AnalyzeCustomAttributeGenerator(AttributeGeneratorMethodAnalysisContext context) => context.Analyze();
+
+    /// <summary>
     /// Create and populate a BaseKeyFunctionAddresses object which can then be populated.
     /// </summary>
     /// <returns>A subclass of <see cref="BaseKeyFunctionAddresses"/> specific to this instruction set</returns>

@@ -34,13 +34,11 @@ public class Il2CppTypeReflectionData
     {
         return isPointer ? "*" : "";
     }
-    
 
     public override string ToString()
     {
         if (isArray)
-            // 秩决定同一组括号内的逗号数；锯齿数组的多层括号由 arrayType 的递归结构表达。
-            return $"{arrayType}[{new string(',', arrayRank - 1)}]{GetPtrSuffix()}";
+            return arrayType + "[]".Repeat(arrayRank) + GetPtrSuffix();
 
         if (!isType)
             return variableGenericParamName + GetPtrSuffix();

@@ -231,7 +231,7 @@ public abstract class HasCustomAttributes(uint token, ApplicationAnalysisContext
         {
             try
             {
-                CaCacheGeneratorAnalysis!.Analyze();
+                AppContext.InstructionSet.AnalyzeCustomAttributeGenerator(CaCacheGeneratorAnalysis!);
             }
             catch (Exception e)
             {
