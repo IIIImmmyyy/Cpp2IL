@@ -1,9 +1,8 @@
-using System.Net;
+using System;
 using System.Net.Http;
 using AssetRipper.Primitives;
 using LibCpp2IL;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace LibCpp2ILTests;
 
@@ -14,9 +13,14 @@ public class Tests
     public Tests(ITestOutputHelper outputHelper)
     {
         _outputHelper = outputHelper;
+
+        //Configure the lib.
+        LibCpp2IlMain.Settings.DisableGlobalResolving = true;
+        LibCpp2IlMain.Settings.DisableMethodPointerMapping = true;
+        LibCpp2IlMain.Settings.AllowManualMetadataAndCodeRegInput = false;
     }
 
-    private static HttpClient client = new();
+    private static HttpClient client = new() { Timeout = TimeSpan.FromMinutes(5) };
 
     private async void CheckFiles(string metadataUrl, string binaryUrl, UnityVersion unityVer)
     {
@@ -28,17 +32,11 @@ public class Tests
         var binaryBytes = await client.GetByteArrayAsync(binaryUrl);
         _outputHelper.WriteLine($"Got {binaryBytes.Length / 1024 / 1024} MB binary file.");
 
-        //Configure the lib.
-        LibCpp2IlMain.Settings.DisableGlobalResolving = true;
-        LibCpp2IlMain.Settings.DisableMethodPointerMapping = true;
-        LibCpp2IlMain.Settings.AllowManualMetadataAndCodeRegInput = false;
-
-        //Clean up any previous runs
-        LibCpp2IlMain.TheMetadata = null;
-        LibCpp2IlMain.Binary = null;
-
         _outputHelper.WriteLine("Invoking LibCpp2IL...");
-        Assert.True(LibCpp2IlMain.Initialize(binaryBytes, metadataBytes, unityVer));
+        var context = LibCpp2IlContextBuilder.Build(binaryBytes, metadataBytes, unityVer);
+        Assert.NotNull(context);
+        Assert.NotNull(context.Binary);
+        Assert.NotNull(context.Metadata);
         _outputHelper.WriteLine("Done.");
     }
 

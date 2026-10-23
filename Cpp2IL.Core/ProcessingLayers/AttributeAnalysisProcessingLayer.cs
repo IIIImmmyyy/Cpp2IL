@@ -14,8 +14,12 @@ public class AttributeAnalysisProcessingLayer : Cpp2IlProcessingLayer
     {
         var total = appContext.Assemblies.Count + appContext.AllTypes.Select(t => 1 + t.Events.Count + t.Fields.Count + t.Methods.Count + t.Properties.Count).Sum();
 
-        int count = 0;
-        appContext.Assemblies.ForEach(a => AnalyzeAndRaise(a, ref count, total, progressCallback));
+        var count = 0;
+        foreach (var a in appContext.Assemblies)
+        {
+            AnalyzeAndRaise(a, ref count, total, progressCallback);
+            AnalyzeAndRaise(a.ManifestModule, ref count, total, progressCallback);
+        }
 
         //TODO look into making this parallel
         foreach (var type in appContext.AllTypes)
@@ -32,7 +36,7 @@ public class AttributeAnalysisProcessingLayer : Cpp2IlProcessingLayer
         }
     }
 
-    private void AnalyzeAndRaise(HasCustomAttributes toAnalyze, ref int count, int total, Action<int, int>? progressCallback)
+    private static void AnalyzeAndRaise(HasCustomAttributes toAnalyze, ref int count, int total, Action<int, int>? progressCallback)
     {
         toAnalyze.AnalyzeCustomAttributeData();
         count++;

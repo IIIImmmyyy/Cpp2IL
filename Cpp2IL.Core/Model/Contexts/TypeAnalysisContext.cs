@@ -4,11 +4,9 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using Cpp2IL.Core.Api;
 using Cpp2IL.Core.Utils;
 using LibCpp2IL.BinaryStructures;
 using LibCpp2IL.Metadata;
-using LibCpp2IL.Reflection;
 using StableNameDotNet.Providers;
 
 namespace Cpp2IL.Core.Model.Contexts;
@@ -16,7 +14,7 @@ namespace Cpp2IL.Core.Model.Contexts;
 /// <summary>
 /// Represents one managed type in the application.
 /// </summary>
-public class TypeAnalysisContext : HasGenericParameters, ITypeInfoProvider, ICSharpSourceToken
+public class TypeAnalysisContext : HasGenericParameters, ITypeInfoProvider, ISIL.IOperand
 {
     /// <summary>
     /// The context for the assembly this type was defined in.
@@ -53,7 +51,7 @@ public class TypeAnalysisContext : HasGenericParameters, ITypeInfoProvider, ICSh
     /// </summary>
     public List<TypeAnalysisContext> NestedTypes { get; internal set; } = [];
 
-    protected override int CustomAttributeIndex => Definition!.CustomAttributeIndex;
+    protected override int CustomAttributeIndex => Definition?.CustomAttributeIndex ?? -1;
 
     public override AssemblyAnalysisContext CustomAttributeAssembly => DeclaringAssembly;
 
@@ -61,25 +59,45 @@ public class TypeAnalysisContext : HasGenericParameters, ITypeInfoProvider, ICSh
 
     public virtual string DefaultNamespace => Definition?.Namespace ?? throw new("Subclasses of TypeAnalysisContext must override DefaultNs");
 
-    public string? OverrideNamespace { get; set; }
+    public virtual string? OverrideNamespace { get; set; }
 
-    public string Namespace => OverrideNamespace ?? DefaultNamespace;
+    public string Namespace
+    {
+        get => OverrideNamespace ?? DefaultNamespace;
+        set => OverrideNamespace = value;
+    }
 
     public virtual TypeAttributes DefaultAttributes => Definition?.Attributes ?? TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed;
 
     public virtual TypeAttributes? OverrideAttributes { get; set; }
 
-    public TypeAttributes Attributes => OverrideAttributes ?? DefaultAttributes;
+    public TypeAttributes Attributes
+    {
+        get => OverrideAttributes ?? DefaultAttributes;
+        set => OverrideAttributes = value;
+    }
 
-    public virtual TypeAnalysisContext? DefaultBaseType => Definition == null ? null : DeclaringAssembly.ResolveIl2CppType(Definition.RawBaseType);
+    public virtual TypeAnalysisContext? DefaultBaseType => Definition == null || DefaultAttributes.HasFlag(TypeAttributes.Interface) ? null : AppContext.ResolveIl2CppType(Definition.RawBaseType);
 
     public TypeAnalysisContext? OverrideBaseType { get; set; }
 
-    public TypeAnalysisContext? BaseType => OverrideBaseType ?? DefaultBaseType;
+    public TypeAnalysisContext? BaseType
+    {
+        get => OverrideBaseType ?? DefaultBaseType;
+        set => OverrideBaseType = value;
+    }
 
     public TypeAnalysisContext? DeclaringType { get; protected internal set; }
 
-    public TypeAnalysisContext? EnumUnderlyingType => Definition == null ? null : DeclaringAssembly.ResolveIl2CppType(Definition.EnumUnderlyingType);
+    public TypeAnalysisContext? OverrideEnumUnderlyingType { get; set; }
+
+    public TypeAnalysisContext? EnumUnderlyingType
+    {
+        get => OverrideEnumUnderlyingType ?? DefaultEnumUnderlyingType;
+        set => OverrideEnumUnderlyingType = value;
+    }
+
+    public TypeAnalysisContext? DefaultEnumUnderlyingType => Definition == null ? null : AppContext.ResolveIl2CppType(Definition.EnumUnderlyingType);
 
     private List<TypeAnalysisContext>? _interfaceContexts;
     public List<TypeAnalysisContext> InterfaceContexts
@@ -87,7 +105,7 @@ public class TypeAnalysisContext : HasGenericParameters, ITypeInfoProvider, ICSh
         get
         {
             // Lazy load the interface contexts
-            _interfaceContexts ??= (Definition?.RawInterfaces.Select(DeclaringAssembly.ResolveIl2CppType).ToList() ?? [])!;
+            _interfaceContexts ??= (Definition?.RawInterfaces.Select(AppContext.ResolveIl2CppType).ToList() ?? [])!;
             return _interfaceContexts;
         }
     }
@@ -156,7 +174,7 @@ public class TypeAnalysisContext : HasGenericParameters, ITypeInfoProvider, ICSh
         }
         set
         {
-            OverrideAttributes = (Attributes & ~TypeAttributes.VisibilityMask) | (value & TypeAttributes.VisibilityMask);
+            Attributes = (Attributes & ~TypeAttributes.VisibilityMask) | (value & TypeAttributes.VisibilityMask);
         }
     }
 
@@ -164,6 +182,7 @@ public class TypeAnalysisContext : HasGenericParameters, ITypeInfoProvider, ICSh
     public bool IsAbstract => (Attributes & TypeAttributes.Abstract) != default;
     public bool IsSealed => (Attributes & TypeAttributes.Sealed) != default;
     public bool IsStatic => IsAbstract && IsSealed;
+    public bool IsDelegate => BaseType is not ReferencedTypeAnalysisContext and { Namespace: "System", Name: "MulticastDelegate" };
 
     /// <summary>
     /// Returns the namespace of this type expressed as a folder hierarchy, with each sub-namespace becoming a sub-directory.
@@ -234,42 +253,42 @@ public class TypeAnalysisContext : HasGenericParameters, ITypeInfoProvider, ICSh
 
     public ArrayTypeAnalysisContext MakeArrayType(int rank)
     {
-        return new(this, rank, DeclaringAssembly);
+        return new(this, rank);
     }
 
     public ByRefTypeAnalysisContext MakeByReferenceType()
     {
-        return new(this, DeclaringAssembly);
+        return new(this);
     }
 
     public GenericInstanceTypeAnalysisContext MakeGenericInstanceType(params IEnumerable<TypeAnalysisContext> genericArguments)
     {
-        return new(this, genericArguments, DeclaringAssembly);
+        return new(this, genericArguments);
     }
 
     public PointerTypeAnalysisContext MakePointerType()
     {
-        return new(this, DeclaringAssembly);
+        return new(this);
     }
 
     public SzArrayTypeAnalysisContext MakeSzArrayType()
     {
-        return new(this, DeclaringAssembly);
+        return new(this);
     }
 
     public PinnedTypeAnalysisContext MakePinnedType()
     {
-        return new(this, DeclaringAssembly);
+        return new(this);
     }
 
     public BoxedTypeAnalysisContext MakeBoxedType()
     {
-        return new(this, DeclaringAssembly);
+        return new(this);
     }
 
     public CustomModifierTypeAnalysisContext MakeCustomModifierType(TypeAnalysisContext modifierType, bool required)
     {
-        return new(this, modifierType, required, DeclaringAssembly);
+        return new(this, modifierType, required);
     }
 
     public InjectedTypeAnalysisContext InjectNestedType(string name, TypeAnalysisContext? baseType, TypeAttributes typeAttributes = TypeAttributes.NestedPublic | TypeAttributes.Sealed)
@@ -307,7 +326,7 @@ public class TypeAnalysisContext : HasGenericParameters, ITypeInfoProvider, ICSh
             var genericClass = type.GetGenericClass();
             var elementType = appContext.ResolveContextForType(genericClass.TypeDefinition)!;
 
-            var genericParamTypes = genericClass.Context.ClassInst.Types;
+            var genericParamTypes = genericClass.Context.ClassInst!.Types;
 
             if (genericParamTypes.Any(t => t.Type is Il2CppTypeEnum.IL2CPP_TYPE_VAR or Il2CppTypeEnum.IL2CPP_TYPE_MVAR))
                 //Discard non-fixed generic instances
@@ -328,7 +347,7 @@ public class TypeAnalysisContext : HasGenericParameters, ITypeInfoProvider, ICSh
             return GetSndnProviderForType(appContext, type.GetArrayElementType());
 
         if (type.Type.IsIl2CppPrimitive())
-            return appContext.ResolveContextForType(LibCpp2IlReflection.PrimitiveTypeDefinitions[type.Type])!;
+            return appContext.ResolveContextForType(appContext.LibCpp2IlContext.ReflectionCache.PrimitiveTypeDefinitions[type.Type])!;
 
         return appContext.ResolveContextForType(type.AsClass())!;
     }

@@ -14,18 +14,13 @@ using Cpp2IL.Core.Utils;
 #if !DEBUG
 using Cpp2IL.Core.Exceptions;
 #endif
-using LibCpp2IL.Wasm;
+using LibCpp2IL;
 using AssetRipper.Primitives;
 using Cpp2IL.Core.Extensions;
 
-#if NET472
-using LibCpp2IL;
-#endif
-
 namespace Cpp2IL;
 
-[SuppressMessage("ReSharper", "ClassNeverInstantiated.Global")]
-internal class Program
+internal static class Program
 {
     private static readonly List<string> PathsToDeleteOnExit = [];
 
@@ -33,13 +28,8 @@ internal class Program
 
     private static void ResolvePathsFromCommandLine(string? gamePath, string? inputExeName, ref Cpp2IlRuntimeArgs args)
     {
-        if (string.IsNullOrEmpty(gamePath))
+        if (gamePath is null or { Length: 0 })
             throw new SoftException("No force options provided, and no game path was provided either. Please provide a game path or use the --force- options.");
-        
-        //Somehow the above doesn't tell .net that gamePath can't be null on net472, so we do this stupid thing to avoid nullable warnings
-#if NET472
-        gamePath = gamePath!;
-#endif
 
         Logger.VerboseNewline("Beginning path resolution...");
 
@@ -203,10 +193,16 @@ internal class Program
     {
         //Windows game.
         args.PathToAssembly = Path.Combine(gamePath, "GameAssembly.dll");
-        var exeName = Path.GetFileNameWithoutExtension(Directory.GetFiles(gamePath)
-            .FirstOrDefault(f => f.EndsWith(".exe") && !MiscUtils.BlacklistedExecutableFilenames.Any(f.EndsWith)));
 
-        exeName = inputExeName ?? exeName;
+        var exeName = inputExeName;
+        
+        //Try by _Data folder
+        exeName ??= Directory.GetDirectories(gamePath)
+            .FirstOrDefault(d => d.EndsWith("_Data") && File.Exists(Path.Combine(d, "il2cpp_data", "Metadata", "global-metadata.dat")))?.Replace("_Data", "");
+        
+        //Then by exe files in the root, ignoring blacklisted ones
+        exeName ??= Path.GetFileNameWithoutExtension(Directory.GetFiles(gamePath)
+            .FirstOrDefault(f => f.EndsWith(".exe") && !MiscUtils.BlacklistedExecutableFilenames.Any(f.EndsWith)));
 
         Logger.VerboseNewline($"Trying HandleWindowsGamePath as provided path is a directory with no GameAssembly.so, potential GA is {args.PathToAssembly} and executable {exeName}");
 
@@ -314,8 +310,7 @@ internal class Program
             var ggmBytes = new byte[0x40];
             using var ggmStream = globalgamemanagers.Open();
 
-            // ReSharper disable once MustUseReturnValue
-            ggmStream.Read(ggmBytes, 0, 0x40);
+            ggmStream.ReadExactly(ggmBytes, 0, 0x40);
 
             args.UnityVersion = Cpp2IlApi.GetVersionFromGlobalGameManagers(ggmBytes);
         }
@@ -403,8 +398,7 @@ internal class Program
             var ggmBytes = new byte[0x40];
             using var ggmStream = globalgamemanagers.Open();
 
-            // ReSharper disable once MustUseReturnValue
-            ggmStream.Read(ggmBytes, 0, 0x40);
+            ggmStream.ReadExactly(ggmBytes, 0, 0x40);
 
             args.UnityVersion = Cpp2IlApi.GetVersionFromGlobalGameManagers(ggmBytes);
         }
@@ -469,8 +463,7 @@ internal class Program
             var ggmBytes = new byte[0x40];
             using var ggmStream = globalgamemanagers.Open();
 
-            // ReSharper disable once MustUseReturnValue
-            ggmStream.Read(ggmBytes, 0, 0x40);
+            ggmStream.ReadExactly(ggmBytes, 0, 0x40);
 
             args.UnityVersion = Cpp2IlApi.GetVersionFromGlobalGameManagers(ggmBytes);
         }
@@ -492,7 +485,12 @@ internal class Program
 #endif
     private static Cpp2IlRuntimeArgs GetRuntimeOptionsFromCommandLine(string[] commandLine)
     {
-        var parserResult = Parser.Default.ParseArguments<CommandLineArgs>(commandLine);
+        var parserResult = new Parser(settings =>
+        {
+            settings.AllowMultiInstance = true;
+            settings.HelpWriter = Console.Out;
+        })
+            .ParseArguments<CommandLineArgs>(commandLine);
 
         if (parserResult is NotParsed<CommandLineArgs> notParsed && notParsed.Errors.Count() == 1 && notParsed.Errors.All(e => e.Tag is ErrorType.VersionRequestedError or ErrorType.HelpRequestedError))
             //Version or help requested
@@ -539,7 +537,7 @@ internal class Program
             if (options.GamePath != null && options.GamePath.StartsWith("~"))
                 options.GamePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + options.GamePath[1..];
 #endif
-                
+
             ResolvePathsFromCommandLine(options.GamePath, options.ExeName, ref result);
         }
         else
@@ -564,12 +562,12 @@ internal class Program
 
         // if(string.IsNullOrEmpty(options.OutputFormatId))      // throw new SoftException("No output format specified, so nothing to do!");
 
-        if (!string.IsNullOrEmpty(options.OutputFormatId))
+        if (options.OutputFormatIds.Any() == true)
         {
             try
             {
-                result.OutputFormat = OutputFormatRegistry.GetFormat(options.OutputFormatId!);
-                Logger.VerboseNewline($"Selected output format: {result.OutputFormat.OutputFormatName}");
+                result.OutputFormats = options.OutputFormatIds.Select(OutputFormatRegistry.GetFormat).ToList();
+                Logger.VerboseNewline($"Selected output formats: [{string.Join(", ", options.OutputFormatIds)}]");
             }
             catch (Exception e)
             {
@@ -656,7 +654,13 @@ internal class Program
 
         var executionStart = DateTime.Now;
 
-        runtimeArgs.OutputFormat?.OnOutputFormatSelected();
+        if (runtimeArgs.OutputFormats != null)
+        {
+            foreach (Cpp2IlOutputFormat format in runtimeArgs.OutputFormats)
+            {
+                format.OnOutputFormatSelected();
+            }
+        }
 
         GCSettings.LatencyMode = runtimeArgs.LowMemoryMode ? GCLatencyMode.Interactive : GCLatencyMode.SustainedLowLatency;
 
@@ -666,15 +670,15 @@ internal class Program
                 var frameworkJs = File.ReadAllText(runtimeArgs.WasmFrameworkJsFile);
                 var remaps = WasmUtils.ExtractAndParseDynCallRemaps(frameworkJs);
                 Logger.InfoNewline($"Parsed {remaps.Count} dynCall remaps from {runtimeArgs.WasmFrameworkJsFile}");
-                WasmFile.RemappedDynCallFunctions = remaps;
+                LibCpp2IlBinaryRegistry.WasmRemappedDynCallFunctions = remaps;
             }
             catch (Exception e)
             {
-                WasmFile.RemappedDynCallFunctions = null;
+                LibCpp2IlBinaryRegistry.WasmRemappedDynCallFunctions = null;
                 Logger.WarnNewline($"Failed to parse dynCall remaps from Wasm Framework Javascript File: {e}. They will not be used, so you probably won't get method bodies!");
             }
         else
-            WasmFile.RemappedDynCallFunctions = null;
+            LibCpp2IlBinaryRegistry.WasmRemappedDynCallFunctions = null;
 
         Cpp2IlApi.InitializeLibCpp2Il(runtimeArgs.PathToAssembly, runtimeArgs.PathToMetadata, runtimeArgs.UnityVersion);
 
@@ -696,25 +700,21 @@ internal class Program
 
         var outputStart = DateTime.Now;
 
-        if (runtimeArgs.OutputFormat != null)
+        if (runtimeArgs.OutputFormats != null)
         {
-            if (runtimeArgs.LowMemoryMode)
-                GC.Collect();
-
-            Logger.InfoNewline($"Outputting as {runtimeArgs.OutputFormat.OutputFormatName} to {runtimeArgs.OutputRootDirectory}...");
-            runtimeArgs.OutputFormat.DoOutput(Cpp2IlApi.CurrentAppContext, runtimeArgs.OutputRootDirectory);
-            Logger.InfoNewline($"Finished outputting in {(DateTime.Now - outputStart).TotalMilliseconds}ms");
+            foreach (Cpp2IlOutputFormat format in runtimeArgs.OutputFormats)
+            {
+                if (runtimeArgs.LowMemoryMode)
+                    GC.Collect();
+                Logger.InfoNewline($"Outputting as {format.OutputFormatName} to {runtimeArgs.OutputRootDirectory}...");
+                format.DoOutput(Cpp2IlApi.CurrentAppContext, runtimeArgs.OutputRootDirectory);
+                Logger.InfoNewline($"Finished outputting in {(DateTime.Now - outputStart).TotalMilliseconds}ms");
+            }
         }
         else
         {
             Logger.WarnNewline("No output format requested, so not outputting anything. The il2cpp game loaded properly though! (Hint: You probably want to specify an output format, try --output-as)");
         }
-
-        // if (runtimeArgs.EnableMetadataGeneration)
-        // Cpp2IlApi.GenerateMetadataForAllAssemblies(runtimeArgs.OutputRootDirectory);
-
-        // if (runtimeArgs.EnableAnalysis)
-        // Cpp2IlApi.PopulateConcreteImplementations();
 
         CleanupExtractedFiles();
 
@@ -768,4 +768,18 @@ internal class Program
             }
         }
     }
+
+#if !NET7_0_OR_GREATER
+    private static void ReadExactly(this Stream stream, byte[] buffer, int offset, int count)
+    {
+        var totalRead = 0;
+        while (totalRead < count)
+        {
+            var bytesRead = stream.Read(buffer, offset + totalRead, count - totalRead);
+            if (bytesRead == 0)
+                throw new EndOfStreamException("Could not read enough bytes from stream");
+            totalRead += bytesRead;
+        }
+    }
+#endif
 }

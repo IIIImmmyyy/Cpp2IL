@@ -5,7 +5,6 @@ using System.Reflection;
 using Cpp2IL.Core.Api;
 using Cpp2IL.Core.Logging;
 using Cpp2IL.Core.Model.Contexts;
-using LibCpp2IL;
 using StableNameDotNet;
 
 namespace Cpp2IL.Core.ProcessingLayers;
@@ -132,7 +131,7 @@ public class StableRenamingProcessingLayer : Cpp2IlProcessingLayer
                 if (!StableNameGenerator.IsObfuscated(field.Name))
                     continue;
 
-                field.OverrideName = $"EnumValue" + field.BackingData!.DefaultValue;
+                field.OverrideName = $"EnumValue{field.ConstantValue}";
             }
         }
 

@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+using System;
 using System.Reflection;
 
 namespace Cpp2IL.Core.Model.Contexts;
@@ -19,28 +19,33 @@ public class InjectedMethodAnalysisContext : MethodAnalysisContext
 
     protected override int CustomAttributeIndex => -1;
 
-    public override IEnumerable<MethodAnalysisContext> Overrides => OverridesList;
-    public List<MethodAnalysisContext> OverridesList { get; } = [];
-
     public InjectedMethodAnalysisContext(
         TypeAnalysisContext parent,
         string name,
         TypeAnalysisContext returnType,
         MethodAttributes attributes,
-        TypeAnalysisContext[] injectedParameterTypes,
-        string[]? injectedParameterNames = null,
-        ParameterAttributes[]? injectedParameterAttributes = null,
+        ReadOnlySpan<TypeAnalysisContext> injectedParameterTypes,
+        ReadOnlySpan<string> injectedParameterNames = default,
+        ReadOnlySpan<ParameterAttributes> injectedParameterAttributes = default,
         MethodImplAttributes defaultImplAttributes = MethodImplAttributes.Managed) : base(null, parent)
     {
         DefaultName = name;
         DefaultReturnType = returnType;
         DefaultAttributes = attributes;
 
+        var hasParameterNames = !injectedParameterNames.IsEmpty;
+        var hasParameterAttributes = !injectedParameterAttributes.IsEmpty;
+
+        if (hasParameterNames && injectedParameterNames.Length != injectedParameterTypes.Length)
+            throw new ArgumentException("Length of injected parameter names must match length of injected parameter types.", nameof(injectedParameterNames));
+        if (hasParameterAttributes && injectedParameterAttributes.Length != injectedParameterTypes.Length)
+            throw new ArgumentException("Length of injected parameter attributes must match length of injected parameter types.", nameof(injectedParameterAttributes));
+
         for (var i = 0; i < injectedParameterTypes.Length; i++)
         {
             var injectedParameterType = injectedParameterTypes[i];
-            var injectedParameterName = injectedParameterNames?[i];
-            var injectedParameterAttribute = injectedParameterAttributes?[i] ?? ParameterAttributes.None;
+            var injectedParameterName = hasParameterNames ? injectedParameterNames[i] : null;
+            var injectedParameterAttribute = hasParameterAttributes ? injectedParameterAttributes[i] : ParameterAttributes.None;
 
             Parameters.Add(new InjectedParameterAnalysisContext(injectedParameterName, injectedParameterType, injectedParameterAttribute, i, this));
         }

@@ -1,9 +1,7 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Cpp2IL.Core.Api;
-using Cpp2IL.Core.Graphs;
 using Cpp2IL.Core.Il2CppApiFunctions;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
@@ -13,32 +11,34 @@ namespace Cpp2IL.Core.InstructionSets;
 
 public class ArmV7InstructionSet : Cpp2IlInstructionSet
 {
-    public override Memory<byte> GetRawBytesForMethod(MethodAnalysisContext context, bool isAttributeGenerator)
+    public override BinarySlice GetRawBytesForMethod(MethodAnalysisContext context, bool isAttributeGenerator)
     {
-        if (ArmV7Utils.TryGetMethodBodyBytesFast(context.UnderlyingPointer, context is AttributeGeneratorMethodAnalysisContext) is { } ret)
-            return ret;
+        var slice = ArmV7Utils.TryGetMethodBodyBytesFast(context.AppContext, context.UnderlyingPointer, isAttributeGenerator);
+        if (slice.Length > 0)
+            return slice;
 
-        var instructions = ArmV7Utils.GetArmV7MethodBodyAtVirtualAddress(context.UnderlyingPointer);
+        var instructions = ArmV7Utils.GetArmV7MethodBodyAtVirtualAddress(context.AppContext, context.UnderlyingPointer);
 
-        return instructions.SelectMany(i => i.Bytes).ToArray();
+        return new BinarySlice(instructions.SelectMany(i => i.Bytes).ToArray());
     }
 
-    public override List<InstructionSetIndependentInstruction> GetIsilFromMethod(MethodAnalysisContext context)
+    public override List<Instruction> GetIsilFromMethod(MethodAnalysisContext context)
     {
         return [];
     }
 
-    public override BaseKeyFunctionAddresses CreateKeyFunctionAddressesInstance()
+    public override List<IOperand> GetParameterOperandsFromMethod(MethodAnalysisContext context)
     {
-        //TODO Fix
-        return new Arm64KeyFunctionAddresses();
+        return [];
     }
+
+    public override BaseKeyFunctionAddresses CreateKeyFunctionAddressesInstance() => new ArmV7KeyFunctionAddresses();
 
     public override string PrintAssembly(MethodAnalysisContext context)
     {
         var sb = new StringBuilder();
 
-        var instructions = ArmV7Utils.GetArmV7MethodBodyAtVirtualAddress(context.UnderlyingPointer);
+        var instructions = ArmV7Utils.GetArmV7MethodBodyAtVirtualAddress(context.AppContext, context.UnderlyingPointer);
 
         var first = true;
         foreach (var instruction in instructions)

@@ -1,16 +1,14 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
-using LibCpp2IL.BinaryStructures;
 using LibCpp2IL.PE;
 
 namespace Cpp2IL.Core.Utils;
 
 #pragma warning disable IDE0305, IDE0300
 
-public static class X64CallingConventionResolver
+public class X64CallingConventionResolver : BaseCallingConventionResolver
 {
     // TODO: GCC(Linux) ABI
 
@@ -20,42 +18,51 @@ public static class X64CallingConventionResolver
 
     const int ptrSize = 8;
 
-    private static bool IsXMM(ParameterAnalysisContext par)
+    private static bool IsXMM(ParameterAnalysisContext par) => IsFloatingPoint(par.ParameterType);
+
+    public override Register ReturnRegister(MethodAnalysisContext ctx)
+        => new(null, IsFloatingPoint(ctx.ReturnType) ? "xmm0" : "rax");
+
+    public override Register? HiddenReturnBufferRegister(MethodAnalysisContext ctx)
+        => ReturnsViaHiddenBuffer(ctx) ? new Register(null, ctx.AppContext.Binary is PE ? "rcx" : "rdi") : null;
+
+    public override bool ReturnsViaHiddenBuffer(MethodAnalysisContext ctx)
     {
-        var parameterType = par.ParameterType;
-        return parameterType == parameterType.AppContext.SystemTypes.SystemSingleType
-            || parameterType == parameterType.AppContext.SystemTypes.SystemDoubleType;
+        if (ctx.IsVoid)
+            return false;
+
+        var returnType = ctx.ReturnType;
+        if (!returnType.IsValueType || IsFloatingPoint(returnType))
+            return false;
+
+        var size = TypeSizes.UnboxedSize(returnType, ptrSize);
+        if (size == 0)
+            return false; // unknown size (e.g. generic): assume a register return
+
+        return ctx.AppContext.Binary is PE ? size is not (1 or 2 or 4 or 8) : size > 16;
     }
 
-    public static InstructionSetIndependentOperand[] ResolveForUnmanaged(ApplicationAnalysisContext app, ulong target)
-    {
-        // This is mostly a stub and may be extended in the future. You can traverse exports here for example.
-        // For now, we'll return all normal registers and omit the floating point registers.
+    private static readonly string[] PeIntegerRegisters = ["rcx", "rdx", "r8", "r9"];
+    private static readonly string[] PeFloatRegisters = ["xmm0", "xmm1", "xmm2", "xmm3"];
+    private static readonly string[] SysVIntegerRegisters = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+    private static readonly string[] SysVFloatRegisters = ["xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"];
 
-        return app.Binary is PE ? new[] {
-            ToOperand(MicrosoftNormalRegister.rcx),
-            ToOperand(MicrosoftNormalRegister.rdx),
-            ToOperand(MicrosoftNormalRegister.r8),
-            ToOperand(MicrosoftNormalRegister.r9)
-        } : new[] {
-            ToOperand(LinuxNormalRegister.rdi),
-            ToOperand(LinuxNormalRegister.rsi),
-            ToOperand(LinuxNormalRegister.rdx),
-            ToOperand(LinuxNormalRegister.rcx),
-            ToOperand(LinuxNormalRegister.r8),
-            ToOperand(LinuxNormalRegister.r9)
-        };
-    }
+    protected override (string[] Integer, string[] Float) RawRegisters(ApplicationAnalysisContext app)
+        => app.Binary is PE ? (PeIntegerRegisters, PeFloatRegisters) : (SysVIntegerRegisters, SysVFloatRegisters);
 
-    public static InstructionSetIndependentOperand[] ResolveForManaged(MethodAnalysisContext ctx)
+    protected override bool UsesShadowedArgumentSlots(ApplicationAnalysisContext app) => app.Binary is PE;
+
+    public override IOperand[] ResolveForManaged(MethodAnalysisContext ctx)
     {
         // if (ctx.AppContext.Binary.is32Bit)
         //    throw new NotSupportedException("Resolution of 64-bit calling conventions in 32-bit binaries is not supported.");
 
-        List<InstructionSetIndependentOperand> args = new();
+        List<IOperand> args = new();
 
         var addThis = !ctx.IsStatic;
-        var isReturningAnOversizedStructure = false; // TODO: Determine whether we return a structure and whether that structure is oversized.
+        // the buffer takes the first argument register but deliberately isn't in the list, as
+        // everything downstream reads that as [this?, params..., MethodInfo]
+        var isReturningAnOversizedStructure = ReturnsViaHiddenBuffer(ctx);
 
         /*
         GCC:
@@ -158,18 +165,7 @@ public static class X64CallingConventionResolver
 
             var i = 0;
 
-            if (isReturningAnOversizedStructure)
-            {
-                args.Add(ToOperand(MicrosoftNormalRegister.rcx + i));
-                i++;
-            }
-
-            if (addThis)
-            {
-                args.Add(ToOperand(MicrosoftNormalRegister.rcx + i));
-                i++;
-            }
-
+            // i is the argument slot, which is not the parameter index once 'this' has taken slot zero.
             void AddParameter(ParameterAnalysisContext? par)
             {
                 if (i < 4)
@@ -178,13 +174,25 @@ public static class X64CallingConventionResolver
                 }
                 else
                 {
-                    args.Add(InstructionSetIndependentOperand.MakeStack((i - 4) * ptrSize));
+                    args.Add(new StackOffset((i - 4) * ptrSize));
                 }
+
+                i++;
             }
 
-            for (; i < ctx.Parameters.Count; i++)
+            if (isReturningAnOversizedStructure)
             {
-                AddParameter(ctx.Parameters[i]);
+                i++; // rcx holds the return buffer pointer, not an argument operand
+            }
+
+            if (addThis)
+            {
+                AddParameter(null);
+            }
+
+            foreach (var par in ctx.Parameters)
+            {
+                AddParameter(par);
             }
 
             AddParameter(null); // The MethodInfo argument
@@ -223,7 +231,7 @@ public static class X64CallingConventionResolver
                 {
                     if (freg == LinuxFloatingRegister.Stack)
                     {
-                        args.Add(InstructionSetIndependentOperand.MakeStack(stack));
+                        args.Add(new StackOffset(stack));
                         stack += ptrSize;
                     }
                     else args.Add(ToOperand(freg++));
@@ -232,7 +240,7 @@ public static class X64CallingConventionResolver
                 {
                     if (nreg == LinuxNormalRegister.Stack)
                     {
-                        args.Add(InstructionSetIndependentOperand.MakeStack(stack));
+                        args.Add(new StackOffset(stack));
                         stack += ptrSize;
                     }
                     else args.Add(ToOperand(nreg++));
@@ -241,7 +249,7 @@ public static class X64CallingConventionResolver
 
             if (isReturningAnOversizedStructure)
             {
-                args.Add(ToOperand(nreg++));
+                nreg++; // rdi holds the return buffer pointer, not an argument operand
             }
 
             if (addThis)
@@ -261,36 +269,36 @@ public static class X64CallingConventionResolver
         return args.ToArray();
     }
 
-    private static InstructionSetIndependentOperand ToOperand(MicrosoftNormalRegister Reg) => Reg switch
+    private static IOperand ToOperand(MicrosoftNormalRegister Reg) => Reg switch
     {
-        MicrosoftNormalRegister.rcx => InstructionSetIndependentOperand.MakeRegister("rcx"),
-        MicrosoftNormalRegister.rdx => InstructionSetIndependentOperand.MakeRegister("rdx"),
-        MicrosoftNormalRegister.r8 => InstructionSetIndependentOperand.MakeRegister("r8"),
-        MicrosoftNormalRegister.r9 => InstructionSetIndependentOperand.MakeRegister("r9"),
+        MicrosoftNormalRegister.rcx => new Register(null, "rcx"),
+        MicrosoftNormalRegister.rdx => new Register(null, "rdx"),
+        MicrosoftNormalRegister.r8 => new Register(null, "r8"),
+        MicrosoftNormalRegister.r9 => new Register(null, "r9"),
         _ => throw new InvalidOperationException("Went past the register limit during resolution.")
     };
 
-    private static InstructionSetIndependentOperand ToOperand(LinuxNormalRegister Reg) => Reg switch
+    private static IOperand ToOperand(LinuxNormalRegister Reg) => Reg switch
     {
-        LinuxNormalRegister.rdi => InstructionSetIndependentOperand.MakeRegister("rdi"),
-        LinuxNormalRegister.rsi => InstructionSetIndependentOperand.MakeRegister("rsi"),
-        LinuxNormalRegister.rdx => InstructionSetIndependentOperand.MakeRegister("rdx"),
-        LinuxNormalRegister.rcx => InstructionSetIndependentOperand.MakeRegister("rcx"),
-        LinuxNormalRegister.r8 => InstructionSetIndependentOperand.MakeRegister("r8"),
-        LinuxNormalRegister.r9 => InstructionSetIndependentOperand.MakeRegister("r9"),
+        LinuxNormalRegister.rdi => new Register(null, "rdi"),
+        LinuxNormalRegister.rsi => new Register(null, "rsi"),
+        LinuxNormalRegister.rdx => new Register(null, "rdx"),
+        LinuxNormalRegister.rcx => new Register(null, "rcx"),
+        LinuxNormalRegister.r8 => new Register(null, "r8"),
+        LinuxNormalRegister.r9 => new Register(null, "r9"),
         _ => throw new InvalidOperationException("Went past the register limit during resolution.")
     };
 
-    private static InstructionSetIndependentOperand ToOperand(LinuxFloatingRegister Reg) => Reg switch
+    private static IOperand ToOperand(LinuxFloatingRegister Reg) => Reg switch
     {
-        LinuxFloatingRegister.xmm0 => InstructionSetIndependentOperand.MakeRegister("xmm0"),
-        LinuxFloatingRegister.xmm1 => InstructionSetIndependentOperand.MakeRegister("xmm1"),
-        LinuxFloatingRegister.xmm2 => InstructionSetIndependentOperand.MakeRegister("xmm2"),
-        LinuxFloatingRegister.xmm3 => InstructionSetIndependentOperand.MakeRegister("xmm3"),
-        LinuxFloatingRegister.xmm4 => InstructionSetIndependentOperand.MakeRegister("xmm4"),
-        LinuxFloatingRegister.xmm5 => InstructionSetIndependentOperand.MakeRegister("xmm5"),
-        LinuxFloatingRegister.xmm6 => InstructionSetIndependentOperand.MakeRegister("xmm6"),
-        LinuxFloatingRegister.xmm7 => InstructionSetIndependentOperand.MakeRegister("xmm7"),
+        LinuxFloatingRegister.xmm0 => new Register(null, "xmm0"),
+        LinuxFloatingRegister.xmm1 => new Register(null, "xmm1"),
+        LinuxFloatingRegister.xmm2 => new Register(null, "xmm2"),
+        LinuxFloatingRegister.xmm3 => new Register(null, "xmm3"),
+        LinuxFloatingRegister.xmm4 => new Register(null, "xmm4"),
+        LinuxFloatingRegister.xmm5 => new Register(null, "xmm5"),
+        LinuxFloatingRegister.xmm6 => new Register(null, "xmm6"),
+        LinuxFloatingRegister.xmm7 => new Register(null, "xmm7"),
         _ => throw new InvalidOperationException("Went past the register limit during resolution.")
     };
 

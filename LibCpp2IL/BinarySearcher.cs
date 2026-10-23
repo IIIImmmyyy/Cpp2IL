@@ -8,47 +8,33 @@ using LibCpp2IL.BinaryStructures;
 using LibCpp2IL.Logging;
 using LibCpp2IL.Metadata;
 using LibCpp2IL.NintendoSwitch;
-using LibCpp2IL.Wasm;
 
 namespace LibCpp2IL;
 
-public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefinitionsCount)
+public class BinarySearcher(Il2CppBinary binary, Il2CppMetadata metadata, int methodCount, int typeDefinitionsCount)
 {
-    private readonly byte[] _binaryBytes = binary.GetRawBinaryContent();
-
     //Used for codereg location pre-2019
     //Used for metadata reg location in 24.5+
 
-    private static int FindSequence(byte[] haystack, byte[] needle, int requiredAlignment = 1, int startOffset = 0)
+    private static int FindSequence(ReadOnlySpan<byte> haystack, ReadOnlySpan<byte> needle, int requiredAlignment = 1, int startOffset = 0)
     {
-        //Convert needle to a span now, rather than in the loop (implicitly as call to SequenceEqual)
-        var needleSpan = new ReadOnlySpan<byte>(needle);
-        var haystackSpan = haystack.AsSpan();
-        var firstByte = needleSpan[0];
-
-        //Find the first occurrence of the first byte of the needle
-        var nextMatchIdx = Array.IndexOf(haystack, firstByte, startOffset);
-
-        var needleLength = needleSpan.Length;
-        var endIdx = haystack.Length - needleLength;
-        var checkAlignment = requiredAlignment > 1;
-
-        while (0 <= nextMatchIdx && nextMatchIdx <= endIdx)
+        var currentHaystack = haystack[startOffset..];
+        while (true)
         {
-            //If we're not aligned, skip this match
-            if (!checkAlignment || nextMatchIdx % requiredAlignment == 0)
-            {
-                //Take a slice of the array at this position and the length of the needle, and compare
-                if (haystackSpan.Slice(nextMatchIdx, needleLength).SequenceEqual(needleSpan))
-                    return nextMatchIdx;
-            }
+            var relativeIdx = currentHaystack.IndexOf(needle);
 
-            //Find the next occurrence of the first byte of the needle
-            nextMatchIdx = Array.IndexOf(haystack, firstByte, nextMatchIdx + 1);
+            //No match found
+            if (relativeIdx == -1)
+                return -1;
+
+            var absoluteIdx = haystack.Length - currentHaystack.Length + relativeIdx;
+
+            if (requiredAlignment <= 1 || absoluteIdx % requiredAlignment == 0)
+                return absoluteIdx;
+
+            // If not aligned, slice the haystack to start searching just after this failed match
+            currentHaystack = currentHaystack[(relativeIdx + 1)..];
         }
-
-        //No match found
-        return -1;
     }
 
     // Find all occurrences of a sequence of bytes, using word alignment by default
@@ -59,7 +45,7 @@ public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefini
         var ptrSize = binary.is32Bit ? 4 : 8;
         while (offset != -1)
         {
-            offset = FindSequence(_binaryBytes, signature, alignment != 0 ? alignment : ptrSize, offset);
+            offset = FindSequence(binary.GetRawBinaryContent(), signature, alignment != 0 ? alignment : ptrSize, offset);
             if (offset != -1)
             {
                 yield return (uint)offset;
@@ -115,17 +101,17 @@ public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefini
             LibLogger.VerboseNewline($"\t\t\tChecking for CodeRegistration at virtual address 0x{va:x}...");
             var cr = binary.ReadReadableAtVirtualAddress<Il2CppCodeRegistration>(va);
 
-            if ((long)cr.customAttributeCount == LibCpp2IlMain.TheMetadata!.attributeTypeRanges.Count)
+            if ((long)cr.customAttributeCount == metadata.attributeTypeRanges!.Count)
                 return va;
 
-            LibLogger.VerboseNewline($"\t\t\t\tNot a valid CodeRegistration - custom attribute count is {cr.customAttributeCount}, expecting {LibCpp2IlMain.TheMetadata!.attributeTypeRanges.Count}");
+            LibLogger.VerboseNewline($"\t\t\t\tNot a valid CodeRegistration - custom attribute count is {cr.customAttributeCount}, expecting {metadata.attributeTypeRanges.Count}");
         }
 
         return 0;
     }
 
     [SuppressMessage("ReSharper", "PossibleMultipleEnumeration")]
-    internal ulong FindCodeRegistrationPost2019(Il2CppMetadata metadata)
+    internal ulong FindCodeRegistrationPost2019()
     {
         //Works only on >=24.2
         var mscorlibs = FindAllStrings("mscorlib.dll\0").Select(idx => binary.MapRawAddressToVirtual(idx)).ToList();
@@ -161,42 +147,66 @@ public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefini
         else
         {
             //but in v27 it's close to the LAST codegen module (winrt.dll is an exception), so we need to work back until we find an xref.
-            var sanityCheckNumberOfModules = Math.Min(400, LibCpp2IlMain.TheMetadata!.imageDefinitions.Length);
+            var sanityCheckNumberOfModules = Math.Min(400, metadata.imageDefinitions.Length);
             var pSomewhereInCodegenModules = pMscorlibCodegenEntryInCodegenModulesList.AsEnumerable();
-            var numModuleDefs = LibCpp2IlMain.TheMetadata!.imageDefinitions.Length;
+            var numModuleDefs = metadata.imageDefinitions.Length;
             var initialBacktrack = numModuleDefs - 10;
 
             pSomewhereInCodegenModules = pSomewhereInCodegenModules.Select(va => va - ptrSize * (ulong)initialBacktrack);
 
             //Slightly experimental, but we're gonna try backtracking most of the way through the number of modules. Not all the way because we don't want to overshoot.
-            int backtrack;
-            for (backtrack = initialBacktrack; backtrack < sanityCheckNumberOfModules && (pCodegenModules?.Count() ?? 0) != 1; backtrack++)
+
+            List<ulong> FindCodegenModules(int initialBacktrackParam)
             {
-                pCodegenModules = FindAllMappedWords(pSomewhereInCodegenModules).ToList();
-
-                //Sanity check the count, which is one pointer back
-                if (pCodegenModules.Count == 1)
+                List<ulong> foundModules = [];
+                
+                for (int backtrack = initialBacktrackParam; backtrack < sanityCheckNumberOfModules && foundModules.Count != 1; backtrack++)
                 {
-                    binary.Reader.Position = binary.MapVirtualAddressToRaw(pCodegenModules.First() - ptrSize);
-                    var moduleCount = binary.Reader.ReadInt32();
+                    foundModules = FindAllMappedWords(pSomewhereInCodegenModules).ToList();
 
-                    if (moduleCount < 0 || moduleCount > sanityCheckNumberOfModules)
-                        pCodegenModules = [];
-                    else
-                        LibLogger.VerboseNewline($"\t\t\tFound valid address for pCodegenModules after a backtrack of {backtrack}, module count is {LibCpp2IlMain.TheMetadata!.imageDefinitions.Length}");
-                }
-                else if (pCodegenModules.Count > 1)
-                {
-                    LibLogger.VerboseNewline($"\t\t\tFound {pCodegenModules.Count} potential pCodegenModules addresses after a backtrack of {backtrack}, which is too many (> 1). Will try backtracking further.");
+                    //Sanity check the count, which is one pointer back
+                    if (foundModules.Count == 1)
+                    {
+                        if (foundModules.Any())
+                        {
+                            binary.Reader.Position = binary.MapVirtualAddressToRaw(foundModules.First() - ptrSize);
+                            var moduleCount = binary.Reader.ReadInt32();
+
+                            if (moduleCount < 0 || moduleCount > sanityCheckNumberOfModules)
+                                foundModules = [];
+                            else
+                                LibLogger.VerboseNewline($"\t\t\tFound valid address for pCodegenModules after a backtrack of {backtrack}/{metadata.imageDefinitions.Length}: {foundModules[0]:X}");
+                        }
+                    }
+                    else if (foundModules.Count > 1)
+                    {
+                        LibLogger.VerboseNewline($"\t\t\tFound {foundModules.Count} potential pCodegenModules addresses after a backtrack of {backtrack}, which is too many (> 1). Will try backtracking further.");
+                    }
+                    pSomewhereInCodegenModules = pSomewhereInCodegenModules.Select(va => va - ptrSize);
                 }
 
-                pSomewhereInCodegenModules = pSomewhereInCodegenModules.Select(va => va - ptrSize);
+                return foundModules;
             }
-
-            if (backtrack == sanityCheckNumberOfModules && (pCodegenModules?.Count() ?? 0) != 1)
+            
+            var backtrackedModules = FindCodegenModules(initialBacktrack);
+            if (backtrackedModules.Count < 1)
             {
-                LibLogger.WarnNewline($"Hit backtrack limit of {backtrack} modules and still didn't find a valid pCodegenModules pointer.");
-                return 0;
+                LibLogger.WarnNewline($"Hit backtrack limit of {sanityCheckNumberOfModules} modules and still didn't find a valid pCodegenModules pointer. Switching to the fallback non-backtracked search");
+                pSomewhereInCodegenModules = pMscorlibCodegenEntryInCodegenModulesList.AsEnumerable();
+                var unbacktrackedModules = FindCodegenModules(0);
+                if (unbacktrackedModules.Count < 1)
+                {
+                    LibLogger.WarnNewline("Fallback search failed to find a valid pCodegen modules pointer.");
+                    return 0;
+                }
+                else
+                {
+                    pCodegenModules = unbacktrackedModules;
+                }
+            }
+            else
+            {
+                pCodegenModules = backtrackedModules;
             }
 
             if (pCodegenModules?.Any() != true)
@@ -230,9 +240,9 @@ public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefini
 
             LibLogger.Verbose($"\t\t\tConsidering potential code registration at 0x{address:X}...");
 
-            var codeReg = LibCpp2IlMain.Binary!.ReadReadableAtVirtualAddress<Il2CppCodeRegistration>(address);
+            var codeReg = binary.ReadReadableAtVirtualAddress<Il2CppCodeRegistration>(address);
 
-            var success = ValidateCodeRegistration(codeReg, fieldsByName);
+            var success = ValidateCodeRegistration(codeReg, fieldsByName, binary);
 
             if (success)
             {
@@ -244,7 +254,7 @@ public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefini
         return 0;
     }
 
-    public static bool ValidateCodeRegistration(Il2CppCodeRegistration codeReg, Dictionary<string, FieldInfo> fieldsByName)
+    public static bool ValidateCodeRegistration(Il2CppCodeRegistration codeReg, Dictionary<string, FieldInfo> fieldsByName, Il2CppBinary binaryToValidate)
     {
         var success = true;
         foreach (var keyValuePair in fieldsByName)
@@ -267,7 +277,7 @@ public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefini
             else
             {
                 //Pointer
-                if (!LibCpp2IlMain.Binary!.TryMapVirtualAddressToRaw(fieldValue, out _))
+                if (!binaryToValidate.TryMapVirtualAddressToRaw(fieldValue, out _))
                 {
                     LibLogger.VerboseNewline($"Rejected due to invalid pointer 0x{fieldValue:X} for field {keyValuePair.Key}");
                     success = false;
@@ -282,14 +292,14 @@ public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefini
     public ulong FindMetadataRegistrationPre24_5()
     {
         //We're looking for TypeDefinitionsSizesCount, which is the 4th-to-last field
-        var sizeOfMr = (ulong)Il2CppMetadataRegistration.GetStructSize(binary.is32Bit);
+        var sizeOfMr = (ulong)Il2CppMetadataRegistration.GetStructSize(binary.is32Bit, metadata.MetadataVersion);
         var ptrSize = binary.is32Bit ? 4ul : 8ul;
 
         var bytesToSubtract = sizeOfMr - ptrSize * 4;
 
-        var potentialMetaRegPointers = MapOffsetsToVirt(FindAllBytes(BitConverter.GetBytes(LibCpp2IlMain.TheMetadata!.typeDefs.Length), 1)).ToList();
+        var potentialMetaRegPointers = MapOffsetsToVirt(FindAllBytes(BitConverter.GetBytes(metadata.TypeDefinitionCount), 1)).ToList();
 
-        LibLogger.VerboseNewline($"\t\t\tFound {potentialMetaRegPointers.Count} instances of the number of type defs, {LibCpp2IlMain.TheMetadata.typeDefs.Length}");
+        LibLogger.VerboseNewline($"\t\t\tFound {potentialMetaRegPointers.Count} instances of the number of type defs, {metadata.TypeDefinitionCount}");
 
         potentialMetaRegPointers = potentialMetaRegPointers.Select(p => p - bytesToSubtract).ToList();
 
@@ -297,28 +307,31 @@ public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefini
         {
             var mr = binary.ReadReadableAtVirtualAddress<Il2CppMetadataRegistration>(potentialMetaRegPointer);
 
-            if (mr.metadataUsagesCount == (ulong)LibCpp2IlMain.TheMetadata!.metadataUsageLists.Length)
+            if (mr.metadataUsagesCount == (ulong)metadata.metadataUsageLists!.Length)
             {
                 LibLogger.VerboseNewline($"\t\t\tFound and selected probably valid metadata registration at 0x{potentialMetaRegPointer:X}.");
                 return potentialMetaRegPointer;
             }
             else
-                LibLogger.VerboseNewline($"\t\t\tSkipping 0x{potentialMetaRegPointer:X} as the metadata reg, metadata usage count was 0x{mr.metadataUsagesCount:X}, expecting 0x{LibCpp2IlMain.TheMetadata.metadataUsageLists.Length:X}");
+                LibLogger.VerboseNewline($"\t\t\tSkipping 0x{potentialMetaRegPointer:X} as the metadata reg, metadata usage count was 0x{mr.metadataUsagesCount:X}, expecting 0x{metadata.metadataUsageLists.Length:X}");
         }
 
         return 0;
     }
 
-    public ulong FindMetadataRegistrationPost24_5(Il2CppMetadata metadata)
+    public ulong FindMetadataRegistrationPost24_5()
     {
         var ptrSize = binary.is32Bit ? 4ul : 8ul;
-        var sizeOfMr = (uint)Il2CppMetadataRegistration.GetStructSize(binary.is32Bit);
+        var sizeOfMr = (uint)Il2CppMetadataRegistration.GetStructSize(binary.is32Bit, metadata.MetadataVersion);
 
         LibLogger.VerboseNewline($"\t\t\tLooking for the number of type definitions, 0x{typeDefinitionsCount:X}");
         var ptrsToNumberOfTypes = FindAllMappedWords((ulong)typeDefinitionsCount).ToList();
 
+        //typeDefinitionsSizesCount sits 4 fields from the end of the struct, or 6 on >= 106.1 which added the two alwaysInitMetadataUsages fields after it
+        var typeDefSizesCountFieldsFromEnd = metadata.MetadataVersion >= 106.1f ? 6ul : 4ul;
+
         LibLogger.VerboseNewline($"\t\t\tFound {ptrsToNumberOfTypes.Count} instances of the number of type definitions: [{string.Join(", ", ptrsToNumberOfTypes.Select(p => p.ToString("X")))}]");
-        var possibleMetadataUsages = ptrsToNumberOfTypes.Select(a => a - sizeOfMr + ptrSize * 4).ToList();
+        var possibleMetadataUsages = ptrsToNumberOfTypes.Select(a => a - sizeOfMr + ptrSize * typeDefSizesCountFieldsFromEnd).ToList();
 
         LibLogger.VerboseNewline($"\t\t\tFound {possibleMetadataUsages.Count} potential metadata registrations: [{string.Join(", ", possibleMetadataUsages.Select(p => p.ToString("X")))}]");
 
@@ -346,7 +359,9 @@ public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefini
                         //Pointer
                         if (mrWords[i] == 0)
                         {
-                            ok = i >= 14; //Maybe need an investigation here, but metadataUsages can be (always is?) a null ptr on v27
+                            //Maybe need an investigation here, but metadataUsages can be (always is?) a null ptr on v27. It's at index 11 on v108+ (which dropped two count/pointer pairs), 14 otherwise.
+                            ok = i >= (metadata.MetadataVersion >= 108 ? 11 : 14);
+                            ok |= i == 1; //genericClasses can rarely be null on v39?
                             if (!ok)
                                 LibLogger.VerboseNewline($"\t\t\tRejecting metadata registration 0x{va:X} because the pointer at index {i} is 0.");
                         }
@@ -372,22 +387,22 @@ public class BinarySearcher(Il2CppBinary binary, int methodCount, int typeDefini
                         // continue;
                     }
 
-                    if (metaReg.typeDefinitionsSizesCount != metadata.typeDefs.Length)
+                    if (metaReg.typeDefinitionsSizesCount != metadata.TypeDefinitionCount)
                     {
-                        LibLogger.VerboseNewline($"\t\t\tRejecting metadata registration 0x{va:X} because it has {metaReg.typeDefinitionsSizesCount} type def sizes, while metadata file defines {metadata.typeDefs.Length} type defs");
+                        LibLogger.VerboseNewline($"\t\t\tRejecting metadata registration 0x{va:X} because it has {metaReg.typeDefinitionsSizesCount} type def sizes, while metadata file defines {metadata.TypeDefinitionCount} type defs");
                         continue;
                     }
 
-                    if (metaReg.numTypes < metadata.typeDefs.Length)
+                    if (metaReg.numTypes < metadata.TypeDefinitionCount)
                     {
-                        LibLogger.VerboseNewline($"\t\t\tRejecting metadata registration 0x{va:X} because it has {metaReg.numTypes} types, which is less than metadata-file-defined type def count of {metadata.typeDefs.Length}");
+                        LibLogger.VerboseNewline($"\t\t\tRejecting metadata registration 0x{va:X} because it has {metaReg.numTypes} types, which is less than metadata-file-defined type def count of {metadata.TypeDefinitionCount}");
                         continue;
                     }
 
-                    if (metaReg.fieldOffsetsCount != metadata.typeDefs.Length)
+                    if (metaReg.fieldOffsetsCount != metadata.TypeDefinitionCount)
                     {
                         //If we see any cases of failing to find meta reg and this line is in verbose log, maybe the assumption (num field offsets == num type defs) is wrong.
-                        LibLogger.VerboseNewline($"\t\t\tRejecting metadata registration 0x{va:X} because it has {metaReg.fieldOffsetsCount} field offsets, while metadata file defines {metadata.typeDefs.Length} type defs");
+                        LibLogger.VerboseNewline($"\t\t\tRejecting metadata registration 0x{va:X} because it has {metaReg.fieldOffsetsCount} field offsets, while metadata file defines {metadata.TypeDefinitionCount} type defs");
                         continue;
                     }
 

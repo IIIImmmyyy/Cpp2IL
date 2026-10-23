@@ -1,3 +1,4 @@
+using Cpp2IL.Core;
 using Cpp2IL.Core.Api;
 using Cpp2IL.Core.Model.Contexts;
 using Cpp2IL.Core.Logging;
@@ -54,9 +55,14 @@ public class ControlFlowGraphOutputFormat : Cpp2IlOutputFormat
 
                         method.ReleaseAnalysisData();
                     }
+                    catch (DecompilerException e)
+                    {
+                        // Expected analysis limitations (e.g. stack state not settling) - one line, no trace.
+                        Logger.WarnNewline($"Skipping {method.FullName}: {e.Message}", "ControlFlowGraphOutputFormat");
+                    }
                     catch (Exception e)
                     {
-                        Logger.ErrorNewline("Method threw an exception while dumping - " + e.ToString());
+                        Logger.ErrorNewline($"Method {method.FullName} threw an exception while dumping - {e.ToCollapsedString()}", "ControlFlowGraphOutputFormat");
                     }
                 }
             });
@@ -145,7 +151,7 @@ public class ControlFlowGraphOutputFormat : Cpp2IlOutputFormat
 
     private static string GetFilePathForMethod(string outputRoot, MethodAnalysisContext method, string assemblyNameClean)
     {
-        TypeAnalysisContext type = method.DeclaringType;
+        TypeAnalysisContext type = method.DeclaringType!;
 
 
         //Get root assembly directory

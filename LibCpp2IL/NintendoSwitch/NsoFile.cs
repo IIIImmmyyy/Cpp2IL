@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
@@ -8,7 +9,7 @@ using LibCpp2IL.Logging;
 
 namespace LibCpp2IL.NintendoSwitch;
 
-public sealed class NsoFile : Il2CppBinary
+public sealed class NsoFile : ElfStyleRelocationsBinary
 {
     private const ulong NsoGlobalOffset = 0;
 
@@ -89,7 +90,7 @@ public sealed class NsoFile : Il2CppBinary
             ReadModHeader();
             ReadDynamicSection();
             ReadSymbolTable();
-            ApplyRelocations();
+            ProcessRelocations();
         }
 
         LibLogger.VerboseNewline($"\tNSO Read completed OK.");
@@ -107,7 +108,7 @@ public sealed class NsoFile : Il2CppBinary
         _modHeader.ModOffset = ReadUInt32();
 
         //Now we have the real mod header position, go to it and read
-        Position = _header.TextSegment.FileOffset + _modHeader.ModOffset + 4;
+        Position = MapVirtualAddressToRaw(_modHeader.ModOffset) + 4;
         _modHeader.DynamicOffset = ReadUInt32() + _modHeader.ModOffset;
         _modHeader.BssStart = ReadUInt32();
         _modHeader.BssEnd = ReadUInt32();
@@ -169,41 +170,13 @@ public sealed class NsoFile : Il2CppBinary
         LibLogger.VerboseNewline($"Got {_symbolTable.Length} symbols");
     }
 
-    private void ApplyRelocations()
+    private void ProcessRelocations()
     {
-        ElfRelaEntry[] relaEntries;
-
-        try
-        {
-            var dtRela = GetDynamicEntry(ElfDynamicType.DT_RELA) ?? throw new("No relocations found in NSO");
-            var dtRelaSize = GetDynamicEntry(ElfDynamicType.DT_RELASZ) ?? throw new("No relocation size entry found in NSO");
-            relaEntries = ReadReadableArrayAtVirtualAddress<ElfRelaEntry>(dtRela.Value, (long)(dtRelaSize.Value / 24)); //24 being sizeof(ElfRelaEntry) on 64-bit
-        }
-        catch
-        {
-            //If we don't have relocations, that's fine.
-            return;
-        }
-
-        LibLogger.VerboseNewline($"\tApplying {relaEntries.Length} relocations from DT_RELA...");
-
-        foreach (var elfRelaEntry in relaEntries)
-        {
-            switch (elfRelaEntry.Type)
-            {
-                case ElfRelocationType.R_AARCH64_ABS64:
-                case ElfRelocationType.R_AARCH64_GLOB_DAT:
-                    var symbol = _symbolTable[elfRelaEntry.Symbol];
-                    WriteWord((int)MapVirtualAddressToRaw(elfRelaEntry.Offset), symbol.Value + elfRelaEntry.Addend);
-                    break;
-                case ElfRelocationType.R_AARCH64_RELATIVE:
-                    WriteWord((int)MapVirtualAddressToRaw(elfRelaEntry.Offset), elfRelaEntry.Addend);
-                    break;
-                default:
-                    LibLogger.WarnNewline($"Unknown relocation type {elfRelaEntry.Type}");
-                    break;
-            }
-        }
+        ApplyRelocations(dynamicEntries
+                .Where(x => x.Tag != ElfDynamicType.DT_NEEDED)
+                .ToDictionary(x => x.Tag, x => x.Value),
+            NsoGlobalOffset,
+            is32Bit ? ElfMachine.EM_ARM : ElfMachine.EM_AARCH64);
     }
 
     public ElfDynamicEntry? GetDynamicEntry(ElfDynamicType tag) => dynamicEntries.Find(x => x.Tag == tag);
@@ -249,15 +222,21 @@ public sealed class NsoFile : Il2CppBinary
         writer.Write(_header.TextHash);
         writer.Write(_header.RoDataHash);
         writer.Write(_header.DataHash);
-        writer.BaseStream.Position = _header.TextSegment.FileOffset;
+
+        Position = _header.ModuleOffset;
+        var moduleName = ReadBytes((int)_header.ModuleFileSize);
+        writer.Write(moduleName);
+
+        Debug.Assert(writer.BaseStream.Position == _header.TextSegment.FileOffset);
         Position = _header.TextSegment.FileOffset;
+        
         var textBytes = ReadBytes((int)_header.TextCompressedSize);
         if (_isTextCompressed)
         {
             var unCompressedData = new byte[_header.TextSegment.DecompressedSize];
             using (var decoder = new Lz4DecodeStream(new MemoryStream(textBytes)))
             {
-                decoder.Read(unCompressedData, 0, unCompressedData.Length);
+                decoder.ReadExactly(unCompressedData, 0, unCompressedData.Length);
             }
 
             writer.Write(unCompressedData);
@@ -273,7 +252,7 @@ public sealed class NsoFile : Il2CppBinary
             var unCompressedData = new byte[_header.RoDataSegment.DecompressedSize];
             using (var decoder = new Lz4DecodeStream(new MemoryStream(roDataBytes)))
             {
-                decoder.Read(unCompressedData, 0, unCompressedData.Length);
+                decoder.ReadExactly(unCompressedData, 0, unCompressedData.Length);
             }
 
             writer.Write(unCompressedData);
@@ -289,7 +268,7 @@ public sealed class NsoFile : Il2CppBinary
             var unCompressedData = new byte[_header.DataSegment.DecompressedSize];
             using (var decoder = new Lz4DecodeStream(new MemoryStream(dataBytes)))
             {
-                decoder.Read(unCompressedData, 0, unCompressedData.Length);
+                decoder.ReadExactly(unCompressedData, 0, unCompressedData.Length);
             }
 
             writer.Write(unCompressedData);
@@ -309,7 +288,7 @@ public sealed class NsoFile : Il2CppBinary
 
     public override long MapVirtualAddressToRaw(ulong addr, bool throwOnError = true)
     {
-        var segment = segments.FirstOrDefault(x => addr - NsoGlobalOffset >= x.MemoryOffset && addr - NsoGlobalOffset <= x.MemoryOffset + x.DecompressedSize);
+        var segment = segments.FirstOrDefault(x => addr - NsoGlobalOffset >= x.MemoryOffset && addr - NsoGlobalOffset < x.MemoryOffset + x.DecompressedSize);
         if (segment == null)
             if (throwOnError)
                 throw new InvalidOperationException($"NSO: Address 0x{addr:X} is not present in any of the segments. Known segment ends are (hex) {string.Join(", ", segments.Select(s => (s.MemoryOffset + s.DecompressedSize).ToString("X")))}");
@@ -319,13 +298,14 @@ public sealed class NsoFile : Il2CppBinary
         return (long)(addr - (segment.MemoryOffset + NsoGlobalOffset) + segment.FileOffset);
     }
 
-    public override ulong MapRawAddressToVirtual(uint offset)
+    public override ulong MapRawAddressToVirtual(uint offset, bool throwOnError = true)
     {
-        var segment = segments.FirstOrDefault(x => offset >= x.FileOffset && offset <= x.FileOffset + x.DecompressedSize);
+        var segment = segments.FirstOrDefault(x => offset >= x.FileOffset && offset < x.FileOffset + x.DecompressedSize);
         if (segment == null)
-        {
-            return 0;
-        }
+            if (throwOnError)
+                throw new InvalidOperationException($"NSO: Offset 0x{offset:X} is not present in any of the segments. Known segment starts are (hex) {string.Join(", ", segments.Select(s => s.FileOffset.ToString("X")))}");
+            else
+                return 0;
 
         return offset - segment.FileOffset + (NsoGlobalOffset + segment.MemoryOffset);
     }
@@ -335,16 +315,16 @@ public sealed class NsoFile : Il2CppBinary
         return pointer;
     }
 
-    public override byte[] GetRawBinaryContent() => _raw;
+    public override ReadOnlySpan<byte> GetRawBinaryContent() => _raw;
 
     public override ulong GetVirtualAddressOfExportedFunctionByName(string toFind)
     {
         return 0;
     }
 
-    public override byte[] GetEntirePrimaryExecutableSection()
+    public override ReadOnlySpan<byte> GetEntirePrimaryExecutableSection()
     {
-        return _raw.Skip((int)_header.TextSegment.FileOffset).Take((int)_header.TextSegment.DecompressedSize).ToArray();
+        return _raw.AsSpan((int)_header.TextSegment.FileOffset, (int)_header.TextSegment.DecompressedSize);
     }
 
     public override ulong GetVirtualAddressOfPrimaryExecutableSection()

@@ -5,7 +5,6 @@ using System.Linq;
 using LibCpp2IL.Elf;
 using LibCpp2IL.Logging;
 using LibCpp2IL.MachO;
-using LibCpp2IL.Metadata;
 using LibCpp2IL.NintendoSwitch;
 using LibCpp2IL.Wasm;
 
@@ -13,6 +12,8 @@ namespace LibCpp2IL;
 
 public static class LibCpp2IlBinaryRegistry
 {
+    public static Dictionary<string, string>? WasmRemappedDynCallFunctions;
+
     private static List<RegisteredBinary> _binaries = [];
 
     public static void RegisterBuiltInBinarySupport()
@@ -31,7 +32,7 @@ public static class LibCpp2IlBinaryRegistry
 
         Register("WebAssembly File", "LibCpp2IL",
             bytes => BitConverter.ToInt32(bytes, 0) == 0x6D736100, //\0WASM
-            (memStream) => new WasmFile(memStream));
+            (memStream) => new WasmFile(memStream, WasmRemappedDynCallFunctions));
 
         Register("Mach-O File", "LibCppIL",
             bytes => BitConverter.ToUInt32(bytes, 0) is 0xFEEDFACE or 0xFEEDFACF,
@@ -49,7 +50,7 @@ public static class LibCpp2IlBinaryRegistry
         _binaries.Add(new(name, source, isValid, factory));
     }
 
-    internal static Il2CppBinary CreateAndInit(byte[] buffer, Il2CppMetadata metadata)
+    internal static Il2CppBinary CreateAndInit(byte[] buffer, LibCpp2IlContext context)
     {
         if (_binaries.Count == 0)
             RegisterBuiltInBinarySupport();
@@ -62,23 +63,9 @@ public static class LibCpp2IlBinaryRegistry
         LibLogger.InfoNewline($"Using binary type {match.Name} (from {match.Source})");
 
         var memStream = new MemoryStream(buffer, 0, buffer.Length, true, true);
-
-        LibLogger.InfoNewline("Searching Binary for Required Data...");
-        var start = DateTime.Now;
-
         var binary = match.FactoryFunc(memStream);
 
-        LibCpp2IlMain.Binary = binary;
-
-        var (codereg, metareg) = binary.FindCodeAndMetadataReg(metadata);
-
-        LibLogger.InfoNewline($"Got Binary codereg: 0x{codereg:X}, metareg: 0x{metareg:X} in {(DateTime.Now - start).TotalMilliseconds:F0}ms.");
-        LibLogger.InfoNewline("Initializing Binary...");
-        start = DateTime.Now;
-
-        binary.Init(codereg, metareg, metadata);
-
-        LibLogger.InfoNewline($"Initialized Binary in {(DateTime.Now - start).TotalMilliseconds:F0}ms");
+        binary.Init(context);
 
         return binary;
     }
