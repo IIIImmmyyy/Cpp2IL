@@ -182,6 +182,11 @@ public class InstructionSetIndependentOpCode
     public static readonly InstructionSetIndependentOpCode FMAX = new(IsilMnemonic.FMAX, 3,
         InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.Any);
+    // 独立运算保留高半乘积，不能复用只保留低位的 Multiply。
+    public static readonly InstructionSetIndependentOpCode MulHigh = new(IsilMnemonic.MulHigh, 3,
+        InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any,
+        InstructionSetIndependentOperand.OperandType.Any);
+
     public static readonly InstructionSetIndependentOpCode Multiply = new(IsilMnemonic.Multiply, 3,
         InstructionSetIndependentOperand.OperandType.Any, InstructionSetIndependentOperand.OperandType.Any,
         InstructionSetIndependentOperand.OperandType.Any);

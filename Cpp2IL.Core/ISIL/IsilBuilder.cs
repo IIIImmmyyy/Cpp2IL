@@ -438,6 +438,10 @@ public class IsilBuilder
     public void Neg(ulong instructionAddress,InstructionSetIndependentOperand dest, InstructionSetIndependentOperand src) =>
         AddInstruction(new(InstructionSetIndependentOpCode.Neg, instructionAddress, IsilFlowControl.Continue, dest,src));
 
+    public void MulHigh(ulong instructionAddress, InstructionSetIndependentOperand dest,
+        InstructionSetIndependentOperand left, InstructionSetIndependentOperand right) => AddInstruction(
+        new(InstructionSetIndependentOpCode.MulHigh, instructionAddress, IsilFlowControl.Continue, dest, left, right));
+
     public void Multiply(ulong instructionAddress, InstructionSetIndependentOperand dest,
         InstructionSetIndependentOperand src1, InstructionSetIndependentOperand src2) => AddInstruction(
         new(InstructionSetIndependentOpCode.Multiply, instructionAddress, IsilFlowControl.Continue, dest, src1, src2));

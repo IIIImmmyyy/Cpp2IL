@@ -92,4 +92,5 @@ public enum IsilMnemonic
     VectorNarrow,
     VectorWidenShiftLeft,
     VectorBitSelect,
+    MulHigh, // 两个有符号 64 位输入的完整乘积高 64 位。
 }
