@@ -158,7 +158,10 @@ public static class AsmResolverAssemblyPopulator
                 CustomAttributeEnumParameter enumParameter when boxIfNeeded => new(systemTypes.SystemObjectType.ToTypeSignature(), new BoxedArgument(GetTypeSigFromAttributeArg(enumParameter), enumParameter.UnderlyingPrimitiveParameter.PrimitiveValue)),
                 CustomAttributeEnumParameter enumParameter => new(GetTypeSigFromAttributeArg(enumParameter), enumParameter.UnderlyingPrimitiveParameter.PrimitiveValue),
                 
-                //BaseCustomAttributeTypeParameter typeParameter when boxIfNeeded => new(systemTypes.SystemObjectType.ToTypeSignature(), new BoxedArgument(GetTypeSigFromAttributeArg(parentAssembly, typeParameter), typeParameter.TypeContext?.ToTypeSignature(parentAssembly.ManifestModule!))),
+                // object 形参中的 typeof 值需要写入 System.Type 类型标记，再序列化类型名称。
+                BaseCustomAttributeTypeParameter typeParameter when boxIfNeeded => new(
+                    systemTypes.SystemObjectType.ToTypeSignature(),
+                    new BoxedArgument(GetTypeSigFromAttributeArg(typeParameter), typeParameter.TypeContext?.ToTypeSignature())),
                 BaseCustomAttributeTypeParameter typeParameter => new(systemTypes.SystemTypeType.ToTypeSignature(), typeParameter.TypeContext?.ToTypeSignature()),
                 
                 CustomAttributeArrayParameter arrayParameter => BuildArrayArgument(arrayParameter),
