@@ -383,7 +383,7 @@ public static class AsmResolverAssemblyPopulator
             foreach (var parameterAnalysisContext in methodCtx.Parameters)
             {
                 var i = parameterAnalysisContext.ParameterIndex;
-                parameterTypes[i] = parameterAnalysisContext.ParameterType.ToTypeSignature();
+                parameterTypes[i] = BuildParameterSignature(methodCtx, parameterAnalysisContext);
 
                 var sequence = (ushort)(i + 1); //Add one because sequence 0 is the return type
                 parameterDefinitions[i] = new(sequence, parameterAnalysisContext.Name, (ParameterAttributes)parameterAnalysisContext.Attributes);
@@ -437,6 +437,29 @@ public static class AsmResolverAssemblyPopulator
             methodCtx.PutExtraData("AsmResolverMethod", managedMethod);
             ilTypeDefinition.Methods.Add(managedMethod);
         }
+    }
+
+    private static TypeSignature BuildParameterSignature(MethodAnalysisContext method, ParameterAnalysisContext parameter)
+    {
+        var signature = parameter.ParameterType.ToTypeSignature();
+        const System.Reflection.ParameterAttributes inOrOut =
+            System.Reflection.ParameterAttributes.In | System.Reflection.ParameterAttributes.Out;
+
+        // 虚方法的 in 参数把 InAttribute 写入 ByRef 签名。参数表的 In 和 IsReadOnly 特性仅用于确认形态。
+        // 只补齐未带修饰符的 ByRef，保留已经表达出的签名。
+        if (!method.IsVirtual ||
+            signature is not ByReferenceTypeSignature ||
+            (parameter.Attributes & inOrOut) != System.Reflection.ParameterAttributes.In ||
+            !parameter.HasCustomAttributeWithFullName("System.Runtime.CompilerServices.IsReadOnlyAttribute"))
+        {
+            return signature;
+        }
+
+        var inAttribute = method.AppContext.SystemTypes.SystemObjectType.DeclaringAssembly
+            .GetTypeByFullName("System.Runtime.InteropServices.InAttribute");
+        return inAttribute == null
+            ? signature
+            : signature.MakeModifierType(inAttribute.ToTypeSignature().ToTypeDefOrRef(), true);
     }
 
     private static void CopyPropertiesInType(TypeAnalysisContext typeContext, TypeDefinition ilTypeDefinition)
